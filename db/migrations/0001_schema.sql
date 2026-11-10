@@ -159,9 +159,15 @@ CREATE TABLE discovery_run (
     KEY idx_run_integration (integration_id, queued_at),
     KEY idx_run_status (status),
 
+    -- ON UPDATE RESTRICT, not CASCADE, and that is not a style choice:
+    -- integration_id is a base column of the stored generated column
+    -- active_lock above, and MySQL refuses a foreign key on such a column
+    -- with CASCADE, SET NULL or SET DEFAULT as either action. RESTRICT and
+    -- NO ACTION are allowed. Nothing is lost — integration.id is an
+    -- AUTO_INCREMENT key that is never updated.
     CONSTRAINT fk_run_integration
         FOREIGN KEY (integration_id) REFERENCES integration (id)
-        ON DELETE RESTRICT ON UPDATE CASCADE
+        ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_0900_ai_ci
