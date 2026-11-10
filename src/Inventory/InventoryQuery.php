@@ -319,6 +319,32 @@ final class InventoryQuery
         return $stmt->fetchAll();
     }
 
+    /**
+     * The devices of one host, grouped by kind.
+     *
+     * Ordered by name, which for vmnic0..vmnic7 and vmk0..vmk3 is also the
+     * order a person expects to read them in.
+     *
+     * @return array<string, list<array<string, mixed>>>
+     */
+    public function hostDevices(int $integrationId, string $hostMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM vc_host_device
+              WHERE integration_id = :id AND host_moref = :moref
+              ORDER BY kind, device'
+        );
+        $stmt->execute(['id' => $integrationId, 'moref' => $hostMoref]);
+
+        $byKind = [];
+
+        while (($row = $stmt->fetch()) !== false) {
+            $byKind[(string) $row['kind']][] = $row;
+        }
+
+        return $byKind;
+    }
+
     // =================================================================
     // Clusters, datastores, licences
     // =================================================================
