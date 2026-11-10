@@ -162,14 +162,31 @@ final class InventoryQuery
             // inside a SQL string literal by some engines and not others,
             // so what reaches the parser depends on the engine; "!" means
             // the same thing everywhere.
-            $conditions[] = "(v.name LIKE :search ESCAPE '!'
-                           OR v.guest_hostname LIKE :search ESCAPE '!'
-                           OR v.guest_ip_address LIKE :search ESCAPE '!'
-                           OR v.instance_uuid LIKE :search ESCAPE '!'
-                           OR v.bios_uuid LIKE :search ESCAPE '!'
-                           OR v.notes LIKE :search ESCAPE '!')";
+            //
+            // EACH FIELD GETS ITS OWN PLACEHOLDER, and that is not style.
+            // With PDO::ATTR_EMULATE_PREPARES off, PDO rewrites named
+            // placeholders into positional ones before handing the statement
+            // to MySQL, which has no named parameters of its own. One name
+            // used six times becomes six positions expecting six values, and
+            // execute() fails with "Invalid parameter number".
+            $fields = [
+                'v.name',
+                'v.guest_hostname',
+                'v.guest_ip_address',
+                'v.instance_uuid',
+                'v.bios_uuid',
+                'v.notes',
+            ];
 
-            $params['search'] = '%' . self::escapeLike($search) . '%';
+            $term  = '%' . self::escapeLike($search) . '%';
+            $parts = [];
+
+            foreach ($fields as $index => $field) {
+                $parts[]                      = $field . " LIKE :search{$index} ESCAPE '!'";
+                $params['search' . $index] = $term;
+            }
+
+            $conditions[] = '(' . implode("\n                           OR ", $parts) . ')';
         }
 
         if (($filters['integration'] ?? '') !== '') {
