@@ -189,7 +189,26 @@ final class Migrator
 
         $started = microtime(true);
 
-        $this->pdo->exec($sql);
+        // Run the statements one at a time rather than handing the whole file
+        // to exec(). MySQL would report only the message, leaving you to find
+        // which of thirteen CREATE TABLEs it came from; this way the failure
+        // names the statement.
+        foreach (self::split($sql) as $index => $statement) {
+            try {
+                $this->pdo->exec($statement);
+            } catch (\PDOException $e) {
+                throw new RuntimeException(
+                    sprintf(
+                        '%s (statement %d: %s)',
+                        $e->getMessage(),
+                        $index + 1,
+                        self::describe($statement)
+                    ),
+                    0,
+                    $e
+                );
+            }
+        }
 
         $durationMs = (int) round((microtime(true) - $started) * 1000);
 
@@ -208,5 +227,135 @@ final class Migrator
         ]);
 
         return $durationMs;
+    }
+
+    // -----------------------------------------------------------------
+    // Splitting a file into statements
+    // -----------------------------------------------------------------
+
+    /**
+     * Split SQL on semicolons, ignoring the ones inside strings, identifiers
+     * and comments.
+     *
+     * Not a parser, and it does not need to be: migrations are DDL, with no
+     * stored procedures and no BEGIN ... END blocks carrying semicolons of
+     * their own. If one is ever needed, it goes in a file the application
+     * applies by hand, not through here.
+     *
+     * @return list<string>
+     */
+    public static function split(string $sql): array
+    {
+        $statements = [];
+        $current    = '';
+        $length     = strlen($sql);
+        $i          = 0;
+
+        while ($i < $length) {
+            $char = $sql[$i];
+            $next = $i + 1 < $length ? $sql[$i + 1] : '';
+
+            // Line comment: -- to end of line, and # to end of line.
+            if (($char === '-' && $next === '-') || $char === '#') {
+                $end     = strpos($sql, "\n", $i);
+                $end     = $end === false ? $length : $end;
+                $current .= substr($sql, $i, $end - $i);
+                $i       = $end;
+                continue;
+            }
+
+            // Block comment.
+            if ($char === '/' && $next === '*') {
+                $end     = strpos($sql, '*/', $i + 2);
+                $end     = $end === false ? $length : $end + 2;
+                $current .= substr($sql, $i, $end - $i);
+                $i       = $end;
+                continue;
+            }
+
+            // Quoted string or quoted identifier. A quote is escaped either by
+            // a backslash or by doubling it.
+            if ($char === "'" || $char === '"' || $char === '`') {
+                $quote   = $char;
+                $current .= $char;
+                $i++;
+
+                while ($i < $length) {
+                    $c = $sql[$i];
+
+                    if ($c === '\\' && $quote !== '`' && $i + 1 < $length) {
+                        $current .= $c . $sql[$i + 1];
+                        $i       += 2;
+                        continue;
+                    }
+
+                    if ($c === $quote) {
+                        // A doubled quote is a literal one, not the end.
+                        if ($i + 1 < $length && $sql[$i + 1] === $quote) {
+                            $current .= $c . $c;
+                            $i       += 2;
+                            continue;
+                        }
+
+                        $current .= $c;
+                        $i++;
+                        break;
+                    }
+
+                    $current .= $c;
+                    $i++;
+                }
+
+                continue;
+            }
+
+            if ($char === ';') {
+                if (trim($current) !== '') {
+                    $statements[] = trim($current);
+                }
+
+                $current = '';
+                $i++;
+                continue;
+            }
+
+            $current .= $char;
+            $i++;
+        }
+
+        // A trailing statement without a closing semicolon still counts.
+        if (trim($current) !== '') {
+            $statements[] = trim($current);
+        }
+
+        // Drop anything that turned out to be only comments.
+        return array_values(array_filter(
+            $statements,
+            static fn (string $s): bool => self::stripComments($s) !== ''
+        ));
+    }
+
+    /**
+     * A short label for a statement, for error messages: "CREATE TABLE vc_vm".
+     */
+    private static function describe(string $statement): string
+    {
+        $bare = self::stripComments($statement);
+
+        if (preg_match('/^\s*(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?`?(\w+)`?/i', $bare, $m)) {
+            return strtoupper($m[1]) . ' ' . strtoupper($m[2]) . ' ' . $m[3];
+        }
+
+        $firstLine = trim(strtok($bare, "\n") ?: $bare);
+
+        return mb_strimwidth($firstLine, 0, 60, '...');
+    }
+
+    private static function stripComments(string $sql): string
+    {
+        $sql = preg_replace('/\/\*.*?\*\//s', '', $sql) ?? $sql;
+        $sql = preg_replace('/^\s*(--|#).*$/m', '', $sql) ?? $sql;
+
+        return trim($sql);
     }
 }
