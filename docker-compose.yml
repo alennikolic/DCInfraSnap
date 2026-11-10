@@ -1,0 +1,135 @@
+# docker-compose.yml
+#
+# DCInfraSnap — local environment.
+# Start with:  cp .env.example .env  &&  docker compose up -d --build
+# GUI:         http://localhost:8080  (or WEB_PORT from .env)
+
+services:
+
+  # ---------------------------------------------------------------
+  # nginx — the only service exposed to the outside.
+  # Document root is ./public; the rest of the repository is not served.
+  # ---------------------------------------------------------------
+  web:
+    image: nginx:1.27-alpine
+    container_name: dcinfrasnap-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - ./public:/app/public:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - dcinfrasnap
+
+  # ---------------------------------------------------------------
+  # php-fpm — the application. No published port; reachable only by
+  # nginx over the internal network on port 9000.
+  # The whole repository is bind-mounted for development.
+  # ---------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: dcinfrasnap-app
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    environment:
+      TZ: UTC
+      APP_ENV: ${APP_ENV:-dev}
+      APP_LOCALE: ${APP_LOCALE:-en}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY}
+      APP_PASSWORD_HASH: ${APP_PASSWORD_HASH}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dcinfrasnap
+
+  # ---------------------------------------------------------------
+  # MySQL. The port is published to the host for development only
+  # (DBeaver, HeidiSQL). In production, delete the whole "ports" block.
+  # ---------------------------------------------------------------
+  db:
+    image: mysql:8.4
+    container_name: dcinfrasnap-db
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    environment:
+      TZ: UTC
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT_HOST:-3307}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - dcinfrasnap
+
+  # ---------------------------------------------------------------
+  # CLI worker — same image as "app", different entrypoint.
+  #
+  # It picks up queued runs written by the GUI or by "discover:queue".
+  # It does nothing until the collector arrives in step 3, but it is
+  # here from the start so the stack does not change shape later.
+  #
+  # init: true puts tini at PID 1, and tini forwards signals to PHP.
+  # Without it PHP is PID 1, where the kernel ignores signals that have
+  # no explicit handler.
+  #
+  # stop_grace_period: on SIGTERM the worker finishes the job in hand
+  # before exiting, so a run is not killed halfway and left locked.
+  # ---------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: dcinfrasnap-worker
+    restart: unless-stopped
+    command: ["php", "/app/bin/dcinfrasnap", "worker"]
+    init: true
+    stop_grace_period: 30s
+    volumes:
+      - .:/app
+    environment:
+      TZ: UTC
+      APP_ENV: ${APP_ENV:-dev}
+      APP_LOCALE: ${APP_LOCALE:-en}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dcinfrasnap
+
+volumes:
+  db_data:
+
+networks:
+  dcinfrasnap:
+    driver: bridge

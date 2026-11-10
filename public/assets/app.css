@@ -1,0 +1,470 @@
+/* public/assets/app.css
+ *
+ * One stylesheet, no framework, no build step.
+ *
+ * The URL carries the file's modification time (see View::asset), so an edit
+ * is visible on the next reload without fighting the browser cache.
+ *
+ * Colours are defined once as custom properties and redefined for dark mode,
+ * so the dark theme is a variable swap rather than a second stylesheet.
+ */
+
+:root {
+    --bg:            #f4f5f7;
+    --panel:         #ffffff;
+    --panel-border:  #e2e5ea;
+    --topbar:        #1c2430;
+    --topbar-text:   #e8ecf2;
+    --topbar-dim:    #8e9bad;
+
+    --text:          #1b2029;
+    --text-dim:      #5f6b7c;
+    --text-faint:    #97a1b0;
+
+    --accent:        #2d6cdf;
+    --accent-soft:   #e8f0fe;
+
+    --ok:            #1f9254;
+    --warn:          #b4690e;
+    --error:         #c1392b;
+    --error-soft:    #fdecea;
+
+    --radius:        8px;
+    --gap:           20px;
+
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg:           #141821;
+        --panel:        #1b212c;
+        --panel-border: #2a3341;
+        --topbar:       #111620;
+        --topbar-text:  #e8ecf2;
+        --topbar-dim:   #7d8a9c;
+
+        --text:         #e3e8ef;
+        --text-dim:     #9aa6b6;
+        --text-faint:   #6b7686;
+
+        --accent:       #6ea0ff;
+        --accent-soft:  #1e2b45;
+
+        --ok:           #3fbf7f;
+        --warn:         #d79a3a;
+        --error:        #e8705f;
+        --error-soft:   #3a2422;
+    }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover { text-decoration: underline; }
+
+h1, h2, h3 {
+    margin: 0 0 6px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+h1 { font-size: 21px; }
+h2 { font-size: 16px; }
+
+p { margin: 0 0 10px; }
+
+/* --- Top bar ---------------------------------------------------------- */
+
+.topbar {
+    background: var(--topbar);
+    color: var(--topbar-text);
+}
+
+.topbar-inner {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap);
+}
+
+.brand {
+    display: flex;
+    flex-direction: column;
+    color: var(--topbar-text);
+    text-decoration: none;
+}
+
+.brand:hover { text-decoration: none; }
+
+.brand-mark {
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+}
+
+.brand-sub {
+    font-size: 12px;
+    color: var(--topbar-dim);
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+/* --- Language picker -------------------------------------------------- */
+
+.lang {
+    display: flex;
+    gap: 2px;
+}
+
+.lang-item,
+.lang-single {
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--topbar-dim);
+}
+
+.lang-item:hover {
+    color: var(--topbar-text);
+    background: rgba(255, 255, 255, 0.08);
+    text-decoration: none;
+}
+
+.lang-item.is-current {
+    color: var(--topbar-text);
+    background: rgba(255, 255, 255, 0.14);
+}
+
+/* --- Main navigation -------------------------------------------------- */
+
+.mainnav {
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.mainnav-inner {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+}
+
+.navitem {
+    padding: 11px 13px;
+    font-size: 14px;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+}
+
+.navitem:hover {
+    color: var(--text);
+    text-decoration: none;
+}
+
+.navitem.is-current {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: 550;
+}
+
+/* Pages that do not exist yet: visible, so the shape of the application is
+   clear, but plainly not clickable. */
+.navitem.is-disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+/* --- Content ---------------------------------------------------------- */
+
+.content {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--gap);
+    margin-bottom: 18px;
+}
+
+.page-head p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 14px;
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 18px;
+    margin-bottom: 18px;
+}
+
+.panel h2 {
+    margin-bottom: 12px;
+}
+
+.panel-notice {
+    max-width: 680px;
+}
+
+/* --- Counters --------------------------------------------------------- */
+
+.counts {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+}
+
+.count-tile {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.count-value {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.count-label {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.count-tile.is-zero .count-value {
+    color: var(--text-faint);
+}
+
+/* --- Tables ----------------------------------------------------------- */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+thead th {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--panel-border);
+}
+
+tbody td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+/* Machine-readable values: identifiers, addresses, sizes. */
+.data {
+    font-family: var(--mono);
+    font-size: 13px;
+}
+
+.muted { color: var(--text-faint); }
+
+/* --- Empty state ------------------------------------------------------ */
+
+.empty {
+    text-align: center;
+    padding: 40px 18px;
+    color: var(--text-dim);
+}
+
+.empty-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* --- Forms ------------------------------------------------------------ */
+
+.field {
+    display: block;
+    margin-bottom: 14px;
+}
+
+.field-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 13px;
+    font-weight: 550;
+    color: var(--text-dim);
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select {
+    width: 100%;
+    padding: 9px 11px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+}
+
+input:focus,
+select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    border-color: var(--accent);
+}
+
+.btn {
+    display: inline-block;
+    padding: 9px 15px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 550;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.btn:hover {
+    border-color: var(--text-faint);
+    text-decoration: none;
+}
+
+.btn-primary {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    width: 100%;
+}
+
+.btn-primary:hover { filter: brightness(1.08); }
+
+.btn-quiet {
+    padding: 5px 11px;
+    font-size: 13px;
+    color: var(--topbar-dim);
+    background: transparent;
+    border-color: transparent;
+}
+
+.btn-quiet:hover {
+    color: var(--topbar-text);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: transparent;
+}
+
+.logout-form { margin: 0; }
+
+/* --- Sign in ---------------------------------------------------------- */
+
+.login-wrap {
+    max-width: 380px;
+    margin: 10vh auto 0;
+}
+
+.login-panel h1 {
+    margin-bottom: 16px;
+}
+
+/* --- Messages --------------------------------------------------------- */
+
+.alert {
+    padding: 9px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    margin-bottom: 14px;
+}
+
+.alert-error {
+    color: var(--error);
+    background: var(--error-soft);
+}
+
+.cmd {
+    margin: 12px 0;
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* --- Footer ----------------------------------------------------------- */
+
+.footer {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 20px 24px 36px;
+    font-size: 12px;
+    color: var(--text-faint);
+}
+
+/* --- Narrow screens --------------------------------------------------- */
+
+@media (max-width: 720px) {
+    .topbar-inner,
+    .mainnav-inner,
+    .content,
+    .footer {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+
+    .brand-sub { display: none; }
+
+    .page-head {
+        flex-direction: column;
+    }
+}

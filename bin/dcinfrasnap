@@ -1,0 +1,347 @@
+#!/usr/bin/env php
+<?php
+// bin/dcinfrasnap
+//
+// The only CLI entry point.
+//
+// Usage:
+//   bin/dcinfrasnap help                 show this list
+//   bin/dcinfrasnap migrate              apply any migrations not yet applied
+//   bin/dcinfrasnap migrate:status       show migration state, change nothing
+//   bin/dcinfrasnap key:generate         generate a value for SECRET_KEY
+//   bin/dcinfrasnap password:hash        generate APP_PASSWORD_HASH for the GUI
+//   bin/dcinfrasnap lang:check           compare language files against English
+//   bin/dcinfrasnap worker               process the collection queue
+//
+// In Docker:
+//   docker compose exec app php bin/dcinfrasnap <command>
+//
+// Why "php bin/dcinfrasnap" and not "bin/dcinfrasnap": the repository is
+// bind-mounted, so the container sees the permissions of the host machine.
+// If the file is not executable there, calling it directly gives "permission
+// denied". Going through php always works.
+
+declare(strict_types=1);
+
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit(1);
+}
+
+use DcInfraSnap\Core\Database;
+use DcInfraSnap\Core\Migrator;
+use DcInfraSnap\Core\Secret;
+use DcInfraSnap\I18n\Translator;
+
+$config = require dirname(__DIR__) . '/config/bootstrap.php';
+
+// -----------------------------------------------------------------------
+// Small helpers
+// -----------------------------------------------------------------------
+$stdout = static function (string $line = ''): void {
+    fwrite(STDOUT, $line . PHP_EOL);
+};
+
+$stderr = static function (string $line = ''): void {
+    fwrite(STDERR, $line . PHP_EOL);
+};
+
+/** Read one line from the terminal. */
+$ask = static function (string $question, string $default = ''): string {
+    $suffix = $default === '' ? '' : " [{$default}]";
+
+    fwrite(STDOUT, $question . $suffix . ': ');
+
+    $answer = fgets(STDIN);
+    $answer = $answer === false ? '' : trim($answer);
+
+    return $answer === '' ? $default : $answer;
+};
+
+/** Read a line without echoing it back. Falls back to a visible prompt. */
+$askSecret = static function (string $question) use ($stdout): string {
+    fwrite(STDOUT, $question . ': ');
+
+    // stty is present in the PHP Alpine image; if it is not, the password is
+    // simply visible, which is better than refusing to run.
+    $hasStty = @shell_exec('command -v stty 2>/dev/null') !== null;
+
+    if ($hasStty) {
+        @shell_exec('stty -echo 2>/dev/null');
+    }
+
+    $answer = fgets(STDIN);
+
+    if ($hasStty) {
+        @shell_exec('stty echo 2>/dev/null');
+        $stdout('');
+    }
+
+    return $answer === false ? '' : trim($answer);
+};
+
+$command = $argv[1] ?? 'help';
+
+// =======================================================================
+// Commands that need neither the database nor a key
+// =======================================================================
+
+// --- help --------------------------------------------------------------
+if (in_array($command, ['help', '--help', '-h'], true)) {
+    $stdout($config['app_name'] . ' — command line');
+    $stdout();
+    $stdout('  migrate              apply any migrations not yet applied');
+    $stdout('  migrate:status       show migration state, change nothing');
+    $stdout('  key:generate         generate a value for SECRET_KEY');
+    $stdout('  password:hash        generate APP_PASSWORD_HASH for the GUI');
+    $stdout('  lang:check           compare language files against English');
+    $stdout('  worker               process the collection queue');
+    $stdout('  help                 this list');
+    $stdout();
+    $stdout('In Docker:  docker compose exec app php bin/dcinfrasnap <command>');
+    exit(0);
+}
+
+// --- key:generate --------------------------------------------------------
+if ($command === 'key:generate') {
+    $stdout('Put this in .env as SECRET_KEY:');
+    $stdout();
+    $stdout('SECRET_KEY=' . Secret::generateKey());
+    $stdout();
+    $stdout('If this key is lost or changed, every stored credential becomes');
+    $stdout('undecryptable and has to be entered again.');
+    exit(0);
+}
+
+// --- password:hash -------------------------------------------------------
+if ($command === 'password:hash') {
+    $password = $askSecret('Password for the GUI');
+
+    if (strlen($password) < 8) {
+        $stderr('The password must be at least 8 characters.');
+        exit(1);
+    }
+
+    $repeat = $askSecret('Repeat');
+
+    if (!hash_equals($password, $repeat)) {
+        $stderr('The two entries do not match.');
+        exit(1);
+    }
+
+    $hash = password_hash($password, PASSWORD_BCRYPT);
+
+    $stdout();
+    $stdout('Put this in .env, SINGLE QUOTES INCLUDED:');
+    $stdout();
+    $stdout("APP_PASSWORD_HASH='" . $hash . "'");
+    $stdout();
+    $stdout('The quotes matter: the hash contains $, which Compose would');
+    $stdout('otherwise read as a variable and swallow part of the string.');
+    exit(0);
+}
+
+// --- lang:check ----------------------------------------------------------
+// Compares every language file against English and reports what is missing
+// and what is left over. Translating is a slow job done in pieces, and this
+// is how you see where it stands.
+if ($command === 'lang:check') {
+    $dir       = $config['lang_dir'];
+    $available = Translator::available($dir);
+
+    /** @var array<string, string> $english */
+    $english = require $dir . '/en.php';
+    $keys    = array_keys($english);
+
+    $stdout('Reference: en.php — keys: ' . count($keys));
+    $stdout();
+
+    foreach (Translator::PLANNED as $code) {
+        if ($code === 'en') {
+            continue;
+        }
+
+        if (!isset($available[$code])) {
+            $stdout(sprintf('  %-4s  not started (no lang/%s.php)', $code, $code));
+            continue;
+        }
+
+        /** @var array<string, string> $messages */
+        $messages = require $dir . '/' . $code . '.php';
+
+        $missing = array_diff($keys, array_keys($messages));
+        $extra   = array_diff(array_keys($messages), $keys);
+
+        $stdout(sprintf(
+            '  %-4s  %s — translated: %d/%d, missing: %d, no longer used: %d',
+            $code,
+            $available[$code],
+            count($keys) - count($missing),
+            count($keys),
+            count($missing),
+            count($extra)
+        ));
+
+        foreach ($missing as $key) {
+            $stdout('          missing: ' . $key);
+        }
+
+        foreach ($extra as $key) {
+            $stdout('          unused:  ' . $key);
+        }
+    }
+
+    $stdout();
+    $stdout('A missing key is not an error — it falls back to English.');
+    exit(0);
+}
+
+// =======================================================================
+// Commands that need the database
+// =======================================================================
+try {
+    $pdo = Database::connect($config['db']);
+} catch (Throwable $e) {
+    $stderr($e->getMessage());
+    $stderr();
+    $stderr('Is the database up?  docker compose ps');
+    exit(1);
+}
+
+$migrator = new Migrator($pdo, $config['migrations_dir']);
+$migrator->ensureTable();
+
+// --- migrate:status ------------------------------------------------------
+if ($command === 'migrate:status') {
+    $available = $migrator->available();
+    $applied   = $migrator->applied();
+    $drift     = $migrator->drift();
+
+    if ($available === []) {
+        $stdout('No migration files in ' . $config['migrations_dir']);
+        exit(0);
+    }
+
+    $stdout(sprintf('%-8s %-28s %-9s %s', 'VERSION', 'NAME', 'STATE', 'APPLIED AT'));
+    $stdout(str_repeat('-', 72));
+
+    foreach ($available as $version => $migration) {
+        $isApplied = isset($applied[$version]);
+
+        $stdout(sprintf(
+            '%-8s %-28s %-9s %s',
+            $version,
+            $migration['name'],
+            $isApplied ? 'applied' : 'pending',
+            $isApplied ? $applied[$version]['applied_at'] . ' UTC' : '—'
+        ));
+    }
+
+    $stdout();
+
+    if ($drift !== []) {
+        $stderr('WARNING: these migrations have been edited after being applied:');
+
+        foreach ($drift as $d) {
+            $stderr('  ' . $d['version'] . '  ' . $d['name']);
+        }
+
+        $stderr();
+        $stderr('The file and the database no longer agree. A fix belongs in a new');
+        $stderr('migration, not in one that has already run.');
+        exit(2);
+    }
+
+    exit(0);
+}
+
+// --- migrate -------------------------------------------------------------
+if ($command === 'migrate') {
+    $drift = $migrator->drift();
+
+    if ($drift !== []) {
+        $stderr('Refusing to run: these migrations have been edited after being applied:');
+
+        foreach ($drift as $d) {
+            $stderr('  ' . $d['version'] . '  ' . $d['name']);
+        }
+
+        $stderr();
+        $stderr('Put the file back the way it was, or add the change as a new migration.');
+        exit(2);
+    }
+
+    $applied = $migrator->applied();
+    $pending = $migrator->pending();
+
+    if ($pending === []) {
+        $stdout('Nothing to apply. The database is up to date (' . count($applied) . ' applied).');
+        exit(0);
+    }
+
+    $stdout('Applying ' . count($pending) . ' migration(s)...');
+    $stdout();
+
+    foreach ($pending as $migration) {
+        $label = sprintf('  %s  %s', $migration['version'], $migration['name']);
+
+        try {
+            $durationMs = $migrator->apply($migration);
+            $stdout($label . str_repeat(' ', max(1, 40 - strlen($label))) . "OK ({$durationMs} ms)");
+        } catch (Throwable $e) {
+            $stdout($label . str_repeat(' ', max(1, 40 - strlen($label))) . 'FAILED');
+            $stderr();
+            $stderr('Migration ' . $migration['version'] . ' failed:');
+            $stderr('  ' . $e->getMessage());
+            $stderr();
+            $stderr('NOTE: MySQL does not roll back DDL. If this file held several');
+            $stderr('statements, some may already be applied. On a fresh install the');
+            $stderr('simplest fix is: docker compose down -v && docker compose up -d');
+
+            exit(1);
+        }
+    }
+
+    $stdout();
+    $stdout('Done. Applied in total: ' . (count($applied) + count($pending)) . '.');
+    exit(0);
+}
+
+// --- worker --------------------------------------------------------------
+//
+// Takes queued runs and carries them out. The collector arrives in step 3;
+// until then the worker runs, answers signals and leaves the queue alone.
+// It exists now so the stack does not change shape later.
+if ($command === 'worker') {
+    $running = true;
+
+    if (function_exists('pcntl_async_signals')) {
+        pcntl_async_signals(true);
+
+        // Finish what is in hand, then exit. Without this, docker compose
+        // stop/restart kills a run halfway and leaves it locked.
+        $stop = static function () use (&$running, $stdout): void {
+            $stdout('Signal received, stopping after the current job.');
+            $running = false;
+        };
+
+        pcntl_signal(SIGTERM, $stop);
+        pcntl_signal(SIGINT, $stop);
+    }
+
+    $stdout($config['app_name'] . ' worker started. Polling every 5 s.');
+    $stdout('No collector yet — queued runs are left untouched (arrives in step 3).');
+
+    while ($running) {
+        // Step 3 replaces this with: claim a queued run, collect, record it.
+        sleep(5);
+    }
+
+    $stdout('Worker stopped.');
+    exit(0);
+}
+
+// --- unknown -------------------------------------------------------------
+$stderr('Unknown command: ' . $command);
+$stderr('Try: php bin/dcinfrasnap help');
+exit(1);
