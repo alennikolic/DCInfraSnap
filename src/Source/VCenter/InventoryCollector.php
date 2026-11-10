@@ -356,6 +356,267 @@ final class InventoryCollector
     }
 
     // =================================================================
+    // Host devices
+    // =================================================================
+
+    /**
+     * Network cards, VMkernel adapters, switches, port groups and storage
+     * adapters, for every host.
+     *
+     * A PASS OF ITS OWN, and that is measured rather than tidy-minded: these
+     * fields are not added to the host read because the response for five
+     * hosts grows from 1.1 KB to 291 KB, roughly 255 times. Most of that is
+     * the iSCSI adapter, which carries supportedAdvancedOptions and
+     * advancedOptions — dozens of blocks per adapter, none of which is kept.
+     *
+     * These devices have no moref: they exist only as entries in a host's
+     * configuration. The identity is assembled as host:kind:device.
+     *
+     * @return list<array{moref: string, fields: array<string, mixed>, raw: array<string, mixed>}>
+     */
+    public function hostDevices(): array
+    {
+        $objects = $this->client->retrieve([
+            'HostSystem' => [
+                'config.network.pnic',
+                'config.network.vnic',
+                'config.network.vswitch',
+                'config.network.portgroup',
+                'config.storageDevice.hostBusAdapter',
+            ],
+        ]);
+
+        $rows = [];
+
+        foreach ($objects as $hostMoref => $props) {
+            $host = (string) $hostMoref;
+
+            foreach ([
+                ['pnic',      'config.network.pnic',                 self::pnic(...)],
+                ['vmk',       'config.network.vnic',                 self::vmk(...)],
+                ['vswitch',   'config.network.vswitch',              self::vswitch(...)],
+                ['portgroup', 'config.network.portgroup',            self::portgroup(...)],
+                ['hba',       'config.storageDevice.hostBusAdapter', self::hba(...)],
+            ] as [$kind, $path, $parser]) {
+                foreach (self::listOf($props[$path] ?? null) as $entry) {
+                    $fields = $parser($entry);
+
+                    if ($fields === null) {
+                        continue;
+                    }
+
+                    $fields['host_moref'] = $host;
+                    $fields['kind']       = $kind;
+
+                    $rows[] = [
+                        'moref'  => $host . ':' . $kind . ':' . $fields['device'],
+                        'raw'    => $entry,
+                        'fields' => $fields,
+                    ];
+                }
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * A physical network card.
+     *
+     * linkSpeed is missing while the link is down, which leaves speed and
+     * duplex empty — an accurate description of the state rather than a gap.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function pnic(array $e): ?array
+    {
+        $device = self::str($e['device'] ?? null);
+
+        if ($device === null) {
+            return null;
+        }
+
+        $link = is_array($e['linkSpeed'] ?? null) ? $e['linkSpeed'] : [];
+
+        return [
+            'device'           => $device,
+            'mac'              => self::str($e['mac'] ?? null),
+            'driver'           => self::str($e['driver'] ?? null),
+            'driver_version'   => self::str($e['driverVersion'] ?? null),
+            'firmware_version' => self::str($e['firmwareVersion'] ?? null),
+            'speed_mb'         => self::int($link['speedMb'] ?? null),
+            'duplex'           => self::bool($link['duplex'] ?? null),
+            'pci'              => self::str($e['pci'] ?? null),
+        ];
+    }
+
+    /**
+     * A VMkernel adapter. This is where a host's own IP addresses live.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function vmk(array $e): ?array
+    {
+        $device = self::str($e['device'] ?? null);
+
+        if ($device === null) {
+            return null;
+        }
+
+        $spec = is_array($e['spec'] ?? null) ? $e['spec'] : [];
+        $ip   = is_array($spec['ip'] ?? null) ? $spec['ip'] : [];
+
+        $route   = is_array($spec['ipRouteSpec'] ?? null) ? $spec['ipRouteSpec'] : [];
+        $config  = is_array($route['ipRouteConfig'] ?? null) ? $route['ipRouteConfig'] : [];
+
+        return [
+            'device'      => $device,
+            'port_group'  => self::str($e['portgroup'] ?? null),
+            'ip_address'  => self::str($ip['ipAddress'] ?? null),
+            'subnet_mask' => self::str($ip['subnetMask'] ?? null),
+            'dhcp'        => self::bool($ip['dhcp'] ?? null),
+            'gateway'     => self::str($config['defaultGateway'] ?? null),
+            'mac'         => self::str($spec['mac'] ?? null),
+            'mtu'         => self::int($spec['mtu'] ?? null),
+        ];
+    }
+
+    /**
+     * A standard virtual switch.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function vswitch(array $e): ?array
+    {
+        $name = self::str($e['name'] ?? null);
+
+        if ($name === null) {
+            return null;
+        }
+
+        return [
+            'device'              => $name,
+            'num_ports'           => self::int($e['numPorts'] ?? null),
+            'num_ports_available' => self::int($e['numPortsAvailable'] ?? null),
+            'mtu'                 => self::int($e['mtu'] ?? null),
+        ];
+    }
+
+    /**
+     * A standard port group. Its name and VLAN sit inside the spec block.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function portgroup(array $e): ?array
+    {
+        $spec = is_array($e['spec'] ?? null) ? $e['spec'] : [];
+        $name = self::str($spec['name'] ?? null);
+
+        if ($name === null) {
+            return null;
+        }
+
+        // VLAN 0 is a real value meaning "no VLAN", so it must not be lost
+        // the way an empty string would be.
+        $vlan = $spec['vlanId'] ?? null;
+
+        return [
+            'device'       => $name,
+            'vlan_id'      => is_numeric($vlan) ? (int) $vlan : null,
+            'vswitch_name' => self::str($spec['vswitchName'] ?? null),
+        ];
+    }
+
+    /**
+     * A storage adapter, all four sub-kinds.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function hba(array $e): ?array
+    {
+        $device = self::str($e['device'] ?? null);
+
+        if ($device === null) {
+            return null;
+        }
+
+        $type = match (self::str($e['_type'] ?? null)) {
+            'HostFibreChannelHba'     => 'fibreChannel',
+            'HostInternetScsiHba'     => 'iscsi',
+            'HostSerialAttachedHba'   => 'serialAttached',
+            'HostParallelScsiHba'     => 'parallelScsi',
+            'HostFibreChannelOverEthernetHba' => 'fcoe',
+            default                   => null,
+        };
+
+        return [
+            'device'           => $device,
+            'hba_type'         => $type,
+            'model'            => self::str($e['model'] ?? null),
+            'driver'           => self::str($e['driver'] ?? null),
+            'pci'              => self::str($e['pci'] ?? null),
+            'status'           => self::str($e['status'] ?? null),
+            'storage_protocol' => self::str($e['storageProtocol'] ?? null),
+            'wwpn'             => self::wwn($e['portWorldWideName'] ?? null),
+            'wwnn'             => self::wwn($e['nodeWorldWideName'] ?? null),
+            'iscsi_name'       => self::str($e['iScsiName'] ?? null),
+            'speed_mb'         => self::int($e['speed'] ?? null),
+        ];
+    }
+
+    /**
+     * A WWN in the form everyone actually uses: 21:00:f4:e9:d4:55:b9:00.
+     *
+     * Fibre Channel reports a decimal number (2378169888378566912) while SAS
+     * already reports a hex string. Both end up the same here, so a serial
+     * from one adapter can be compared with one from another.
+     */
+    public static function wwn(mixed $value): ?string
+    {
+        $text = self::str($value);
+
+        if ($text === null) {
+            return null;
+        }
+
+        if (ctype_digit($text)) {
+            // 16 hex digits, zero padded; the decimal form loses leading zeros.
+            $text = str_pad(dechex((int) $text), 16, '0', STR_PAD_LEFT);
+        }
+
+        $text = strtolower(str_replace([':', '-', ' '], '', $text));
+
+        if (!ctype_xdigit($text) || strlen($text) !== 16) {
+            // Anything unexpected is passed through rather than mangled.
+            return mb_substr(self::str($value) ?? '', 0, 32);
+        }
+
+        return implode(':', str_split($text, 2));
+    }
+
+    /**
+     * Whatever vCenter returned, as a list.
+     *
+     * A single entry arrives as a map rather than a list of one, and a host
+     * with one network card must not produce a different shape from a host
+     * with two.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function listOf(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        if (!array_is_list($value)) {
+            $value = [$value];
+        }
+
+        return array_values(array_filter($value, 'is_array'));
+    }
+
+    // =================================================================
     // Licenses
     // =================================================================
 

@@ -34,9 +34,10 @@ use DcInfraSnap\Web\Format;
                     <th><?= $e($t('common.name')) ?></th>
                     <th><?= $e($t('datastores.type')) ?></th>
                     <th><?= $e($t('datastores.used')) ?></th>
-                    <th><?= $e($t('datastores.capacity')) ?></th>
                     <th><?= $e($t('datastores.free')) ?></th>
+                    <th><?= $e($t('datastores.capacity')) ?></th>
                     <th><?= $e($t('datastores.uncommitted')) ?></th>
+                    <th><?= $e($t('nav.hosts')) ?></th>
                     <th><?= $e($t('nav.vms')) ?></th>
                 </tr>
             </thead>
@@ -70,9 +71,10 @@ use DcInfraSnap\Web\Format;
                             <span class="muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="data"><?= $e(Format::bytes($row['capacity_bytes'])) ?></td>
                     <td class="data"><?= $e(Format::bytes($row['free_bytes'])) ?></td>
+                    <td class="data"><?= $e(Format::bytes($row['capacity_bytes'])) ?></td>
                     <td class="data"><?= $e(Format::bytes($row['uncommitted_bytes'])) ?></td>
+                    <td class="data"><?= $e(Format::number($row['host_count'])) ?></td>
                     <td class="data"><?= $e(Format::number($row['vm_count'])) ?></td>
                 </tr>
             <?php endforeach; ?>

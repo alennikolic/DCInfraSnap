@@ -134,9 +134,10 @@ $missing = static function (array $row) use ($lastRuns): bool {
                     <th><?= $e($t('vms.power')) ?></th>
                     <th><?= $e($t('vms.guest')) ?></th>
                     <th><?= $e($t('vms.address')) ?></th>
-                    <th><?= $e($t('vms.cpu')) ?></th>
-                    <th><?= $e($t('vms.memory')) ?></th>
-                    <th><?= $e($t('nav.hosts')) ?></th>
+                    <th><?= $e($t('vms.cpu_ram')) ?></th>
+                    <th><?= $e($t('vms.disk')) ?></th>
+                    <th><?= $e($t('vms.network')) ?></th>
+                    <th><?= $e($t('common.host')) ?></th>
                     <th><?= $e($t('list.last_seen')) ?></th>
                 </tr>
             </thead>
@@ -157,8 +158,26 @@ $missing = static function (array $row) use ($lastRuns): bool {
                     <td><?= $e(Format::state($row['power_state'])) ?></td>
                     <td><?= $e($row['guest_full_name'] ?? $row['guest_os'] ?? '—') ?></td>
                     <td class="data"><?= $e($row['guest_ip_address'] ?? '—') ?></td>
-                    <td class="data"><?= $e(Format::number($row['cpu_count'])) ?></td>
-                    <td class="data"><?= $e(Format::mib($row['memory_mib'])) ?></td>
+
+                    <td class="data">
+                        <?= $e(Format::number($row['cpu_count'])) ?>
+                        <span class="sep">/</span>
+                        <?= $e(Format::mib($row['memory_mib'])) ?>
+                    </td>
+
+                    <td class="data">
+                        <?= $e(Format::bytes($row['disk_capacity_bytes'])) ?>
+                        <?php if (($row['disk_count'] ?? null) !== null): ?>
+                            <span class="muted">&times; <?= $e($row['disk_count']) ?></span>
+                        <?php endif; ?>
+                    </td>
+
+                    <td class="data">
+                        <?= $row['nic_count'] === null
+                            ? '<span class="muted">—</span>'
+                            : $e($row['nic_count']) ?>
+                    </td>
+
                     <td><?= $e($row['host_name'] ?? '—') ?></td>
                     <td title="<?= $e((string) $row['last_seen']) ?> UTC">
                         <?= $e(Format::ago($row['last_seen'])) ?>

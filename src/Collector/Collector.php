@@ -126,6 +126,11 @@ final class Collector
                 'vm'        => $collector->vms(),
                 'datastore' => $collector->datastores(),
                 'license'   => $collector->licenses(),
+
+                // A separate pass on purpose: measured, adding these fields
+                // to the host read grows the response for five hosts from
+                // 1.1 KB to 291 KB.
+                'host_device' => $collector->hostDevices(),
             };
 
             if ($dryRun) {

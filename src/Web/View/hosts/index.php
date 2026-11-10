@@ -30,11 +30,10 @@ use DcInfraSnap\Web\Format;
                 <tr>
                     <th><?= $e($t('common.name')) ?></th>
                     <th><?= $e($t('hosts.state')) ?></th>
-                    <th><?= $e($t('nav.clusters')) ?></th>
-                    <th><?= $e($t('hosts.hardware')) ?></th>
-                    <th><?= $e($t('hosts.cpu')) ?></th>
-                    <th><?= $e($t('hosts.memory')) ?></th>
+                    <th><?= $e($t('common.cluster')) ?></th>
                     <th><?= $e($t('hosts.vms')) ?></th>
+                    <th><?= $e($t('hosts.hardware')) ?></th>
+                    <th><?= $e($t('hosts.cpu_ram')) ?></th>
                     <th><?= $e($t('hosts.esxi')) ?></th>
                 </tr>
             </thead>
@@ -61,6 +60,7 @@ use DcInfraSnap\Web\Format;
                         </span>
                     </td>
                     <td><?= $e($row['cluster_name'] ?? '—') ?></td>
+                    <td class="data"><?= $e(Format::number($row['vm_count'])) ?></td>
                     <td>
                         <?= $e(trim(($row['vendor'] ?? '') . ' ' . ($row['model'] ?? '')) ?: '—') ?>
                         <?php if (($row['serial_number'] ?? '') !== ''): ?>
@@ -69,10 +69,10 @@ use DcInfraSnap\Web\Format;
                     </td>
                     <td class="data">
                         <?= $e(Format::number($row['cpu_cores'])) ?>
-                        <span class="muted">/ <?= $e(Format::number($row['cpu_sockets'])) ?></span>
+                        <span class="muted">&times; <?= $e(Format::number($row['cpu_sockets'])) ?></span>
+                        <span class="sep">/</span>
+                        <?= $e(Format::bytes($row['memory_bytes'])) ?>
                     </td>
-                    <td class="data"><?= $e(Format::bytes($row['memory_bytes'])) ?></td>
-                    <td class="data"><?= $e(Format::number($row['vm_count'])) ?></td>
                     <td class="data"><?= $e($row['esxi_version'] ?? '—') ?></td>
                 </tr>
             <?php endforeach; ?>

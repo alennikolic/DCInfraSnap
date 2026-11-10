@@ -132,6 +132,29 @@ final class ObjectType
             ),
 
             new self(
+                key: 'host_device',
+                table: 'vc_host_device',
+                changeTable: 'vc_host_device_change',
+                changeKey: 'device_id',
+                columns: [
+                    'host_moref', 'kind', 'device',
+                    'mac', 'driver', 'driver_version', 'firmware_version',
+                    'speed_mb', 'duplex', 'pci',
+                    'ip_address', 'subnet_mask', 'gateway', 'dhcp', 'mtu', 'port_group',
+                    'num_ports', 'num_ports_available',
+                    'vlan_id', 'vswitch_name',
+                    'hba_type', 'model', 'status', 'storage_protocol',
+                    'wwpn', 'wwnn', 'iscsi_name',
+                ],
+                runPrefix: 'host_devices',
+
+                // Free ports on a switch move as machines power on and off,
+                // which is not a configuration change and does not belong in
+                // the journal.
+                volatile: ['num_ports_available'],
+            ),
+
+            new self(
                 key: 'license',
                 table: 'vc_license',
                 changeTable: 'vc_license_change',

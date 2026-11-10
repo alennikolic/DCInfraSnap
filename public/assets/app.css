@@ -753,3 +753,22 @@ tr.is-inactive td {
 .table-raw td {
     padding: 6px 10px;
 }
+
+/* --- Device panels on a host page -------------------------------------- */
+
+.device-head {
+    margin: 20px 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+}
+
+.device-head:first-of-type { margin-top: 4px; }
+
+/* Separates the two halves of a combined column, e.g. CPU / RAM. */
+.sep {
+    margin: 0 3px;
+    color: var(--text-faint);
+}

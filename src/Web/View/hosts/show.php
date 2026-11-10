@@ -8,6 +8,7 @@
 /** @var array<string,mixed> $host */
 /** @var list<array<string,mixed>> $vms */
 /** @var list<array<string,mixed>> $changes */
+/** @var array<string, list<array<string,mixed>>> $devices */
 
 use DcInfraSnap\Web\Format;
 
@@ -109,6 +110,8 @@ $rows = static function (array $pairs) use ($e): void {
         </table>
     <?php endif; ?>
 </div>
+
+<?php require __DIR__ . '/devices.php'; ?>
 
 <div class="panel">
     <h2><?= $e($t('journal.title')) ?></h2>

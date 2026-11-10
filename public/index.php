@@ -363,6 +363,7 @@ if ($route === 'hosts.show') {
     $respond($view->render('hosts/show', [
         'host'    => $host,
         'vms'     => $inventory->vmsOnHost((int) $host['integration_id'], (string) $host['moref']),
+        'devices' => $inventory->hostDevices((int) $host['integration_id'], (string) $host['moref']),
         'changes' => $inventory->changes(ObjectType::get('host'), (int) $id),
     ]));
 }

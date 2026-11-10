@@ -144,7 +144,7 @@ final class RunRepository
         int $found = 0,
         int $changed = 0,
     ): void {
-        $allowed = ['clusters', 'hosts', 'vms', 'datastores', 'licenses'];
+        $allowed = ['clusters', 'hosts', 'vms', 'datastores', 'licenses', 'host_devices'];
 
         if (!in_array($prefix, $allowed, true)) {
             throw new RuntimeException("Unknown object type prefix: {$prefix}");
