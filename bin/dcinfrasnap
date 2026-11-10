@@ -11,6 +11,13 @@
 //   bin/dcinfrasnap key:generate         generate a value for SECRET_KEY
 //   bin/dcinfrasnap password:hash        generate APP_PASSWORD_HASH for the GUI
 //   bin/dcinfrasnap lang:check           compare language files against English
+//   bin/dcinfrasnap integrations         list the configured sources
+//   bin/dcinfrasnap integration:add      add a vCenter (interactive)
+//   bin/dcinfrasnap integration:test <id>      check the connection
+//   bin/dcinfrasnap integration:password <id>  change the password
+//   bin/dcinfrasnap integration:enable <id>
+//   bin/dcinfrasnap integration:disable <id>
+//   bin/dcinfrasnap integration:delete <id>    remove it and everything collected
 //   bin/dcinfrasnap worker               process the collection queue
 //
 // In Docker:
@@ -32,6 +39,9 @@ use DcInfraSnap\Core\Database;
 use DcInfraSnap\Core\Migrator;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
+use DcInfraSnap\Integration\IntegrationRepository;
+use DcInfraSnap\Source\VCenter\ClientFactory;
+use DcInfraSnap\Source\VCenter\VCenterException;
 
 $config = require dirname(__DIR__) . '/config/bootstrap.php';
 
@@ -95,6 +105,15 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  key:generate         generate a value for SECRET_KEY');
     $stdout('  password:hash        generate APP_PASSWORD_HASH for the GUI');
     $stdout('  lang:check           compare language files against English');
+    $stdout();
+    $stdout('  integrations                list the configured sources');
+    $stdout('  integration:add             add a vCenter (interactive)');
+    $stdout('  integration:test <id>       check the connection');
+    $stdout('  integration:password <id>   change the password');
+    $stdout('  integration:enable <id>');
+    $stdout('  integration:disable <id>');
+    $stdout('  integration:delete <id>     remove it and everything collected');
+    $stdout();
     $stdout('  worker               process the collection queue');
     $stdout('  help                 this list');
     $stdout();
@@ -305,6 +324,246 @@ if ($command === 'migrate') {
     $stdout();
     $stdout('Done. Applied in total: ' . (count($applied) + count($pending)) . '.');
     exit(0);
+}
+
+// =======================================================================
+// Sources
+//
+// Everything from here on needs the encryption key as well.
+// =======================================================================
+if (str_starts_with($command, 'integration')) {
+    try {
+        $secret = new Secret($config['secret_key']);
+    } catch (Throwable $e) {
+        $stderr($e->getMessage());
+        exit(1);
+    }
+
+    $repo = new IntegrationRepository($pdo, $secret);
+
+    /** The source named by the first argument, or exit with a message. */
+    $requireIntegration = static function () use ($argv, $repo, $stderr) {
+        $id = isset($argv[2]) ? (int) $argv[2] : 0;
+
+        if ($id < 1) {
+            $stderr('Which source? Give its number, e.g. integration:test 1');
+            $stderr('List them with: integrations');
+            exit(1);
+        }
+
+        $integration = $repo->find($id);
+
+        if ($integration === null) {
+            $stderr("There is no source with number {$id}.");
+            exit(1);
+        }
+
+        return $integration;
+    };
+
+    // --- integration:add -------------------------------------------------
+    if ($command === 'integration:add') {
+        $stdout('New vCenter source.');
+        $stdout();
+
+        $hostname = $ask('Hostname or IP of the vCenter');
+
+        if ($hostname === '') {
+            $stderr('The address is required.');
+            exit(1);
+        }
+
+        if (preg_match('#^https?://#i', $hostname) === 1) {
+            $stderr('Enter the hostname only, without https://');
+            exit(1);
+        }
+
+        $name     = $ask('Name for this source', $hostname);
+        $port     = (int) $ask('Port', '443');
+        $username = $ask('Username (a read-only account is enough)');
+
+        if ($username === '') {
+            $stderr('The username is required.');
+            exit(1);
+        }
+
+        $password = $askSecret('Password');
+
+        if ($password === '') {
+            $stderr('The password is required.');
+            exit(1);
+        }
+
+        $verify = strtolower($ask('Verify the TLS certificate? (y/N)', 'n')) === 'y';
+
+        try {
+            $newId = $repo->create(
+                name: $name,
+                hostname: $hostname,
+                username: $username,
+                password: $password,
+                port: $port,
+                verifyPeer: $verify,
+            );
+        } catch (Throwable $e) {
+            $stderr($e->getMessage());
+            exit(1);
+        }
+
+        $stdout();
+        $stdout("Added as number {$newId}.");
+        $stdout("Check it with: php bin/dcinfrasnap integration:test {$newId}");
+        exit(0);
+    }
+
+    // --- integrations ----------------------------------------------------
+    if ($command === 'integrations') {
+        $integrations = $repo->all();
+
+        if ($integrations === []) {
+            $stdout('No sources yet. Add the first with: bin/dcinfrasnap integration:add');
+            exit(0);
+        }
+
+        $stdout(sprintf(
+            '%-4s %-22s %-30s %-10s %-10s %s',
+            'ID', 'NAME', 'ADDRESS', 'STATE', 'VERSION', 'LAST TEST'
+        ));
+        $stdout(str_repeat('-', 104));
+
+        foreach ($integrations as $i) {
+            $test = $i->lastTestedAt === null
+                ? 'not tested'
+                : ($i->lastTestOk ? 'OK ' : 'FAILED ') . $i->lastTestedAt;
+
+            $stdout(sprintf(
+                '%-4d %-22s %-30s %-10s %-10s %s',
+                $i->id,
+                mb_strimwidth($i->name, 0, 22, '..'),
+                mb_strimwidth($i->endpoint(), 0, 30, '..'),
+                $i->isActive ? 'active' : 'disabled',
+                $i->productVersion ?? '—',
+                $test
+            ));
+        }
+
+        $stdout();
+        exit(0);
+    }
+
+    // --- integration:test ------------------------------------------------
+    if ($command === 'integration:test') {
+        $integration = $requireIntegration();
+
+        $stdout("Connecting to {$integration->endpoint()} as {$integration->username} ...");
+
+        $factory = new ClientFactory(timeout: 30);
+
+        try {
+            $client = $factory->make($integration, $repo->password($integration->id));
+            $result = $client->testConnection();
+
+            $message = 'connected to ' . ($result['full_name'] ?? $result['version'] ?? '?');
+
+            $repo->recordTest($integration->id, true, $message, $result['version']);
+
+            $stdout();
+            $stdout('OK — ' . $message);
+            $stdout('  product version : ' . ($result['version'] ?? '—'));
+            $stdout('  API version     : ' . ($result['api_version'] ?? '—'));
+            $stdout('  SOAP calls      : ' . $client->callCount());
+            exit(0);
+        } catch (VCenterException $e) {
+            $repo->recordTest($integration->id, false, $e->getMessage());
+
+            $stderr();
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        } catch (Throwable $e) {
+            $repo->recordTest($integration->id, false, $e->getMessage());
+
+            $stderr();
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        }
+    }
+
+    // --- integration:password --------------------------------------------
+    if ($command === 'integration:password') {
+        $integration = $requireIntegration();
+
+        $stdout("New password for {$integration->username} @ {$integration->endpoint()}");
+
+        $password = $askSecret('Password');
+
+        if ($password === '') {
+            $stderr('The password is required.');
+            exit(1);
+        }
+
+        if (!hash_equals($password, $askSecret('Repeat'))) {
+            $stderr('The two entries do not match.');
+            exit(1);
+        }
+
+        $repo->updatePassword($integration->id, $password);
+
+        $stdout();
+        $stdout('Saved. Check it with: php bin/dcinfrasnap integration:test ' . $integration->id);
+        exit(0);
+    }
+
+    // --- integration:enable / integration:disable -------------------------
+    if ($command === 'integration:enable' || $command === 'integration:disable') {
+        $integration = $requireIntegration();
+        $enable      = $command === 'integration:enable';
+
+        $repo->setActive($integration->id, $enable);
+
+        $stdout($integration->name . ' is now ' . ($enable ? 'active' : 'disabled') . '.');
+        exit(0);
+    }
+
+    // --- integration:delete -----------------------------------------------
+    if ($command === 'integration:delete') {
+        $integration = $requireIntegration();
+        $counts      = $repo->collectedCounts($integration->id);
+        $total       = array_sum($counts);
+
+        $stdout("About to delete: {$integration->name} ({$integration->endpoint()})");
+
+        if ($total > 0) {
+            $stdout();
+            $stdout('This also deletes everything collected through it:');
+
+            foreach ($counts as $table => $count) {
+                if ($count > 0) {
+                    $stdout(sprintf('  %-16s %d', $table, $count));
+                }
+            }
+        }
+
+        $stdout();
+
+        if (strtolower($ask('Type "yes" to confirm')) !== 'yes') {
+            $stdout('Cancelled. Nothing was deleted.');
+            exit(0);
+        }
+
+        try {
+            $repo->delete($integration->id);
+        } catch (Throwable $e) {
+            $stderr('Delete failed: ' . $e->getMessage());
+            exit(1);
+        }
+
+        $stdout('Deleted.');
+        exit(0);
+    }
+
+    $stderr('Unknown command: ' . $command);
+    $stderr('Try: php bin/dcinfrasnap help');
+    exit(1);
 }
 
 // --- worker --------------------------------------------------------------

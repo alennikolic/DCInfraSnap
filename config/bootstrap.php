@@ -41,11 +41,11 @@ if (is_file($composerAutoload)) {
 
 // -----------------------------------------------------------------------
 // Fail fast on a missing extension, with a message that says what to do.
-// Without this, the first symptom is "Class SoapClient not found" somewhere
+// Without this, the first symptom is "Call to undefined function" somewhere
 // deep in a collector.
 // -----------------------------------------------------------------------
 $missing = array_values(array_filter(
-    ['pdo_mysql', 'sodium', 'soap', 'json', 'mbstring'],
+    ['pdo_mysql', 'sodium', 'curl', 'json', 'mbstring'],
     static fn (string $ext): bool => !extension_loaded($ext)
 ));
 

@@ -4,16 +4,20 @@
 // The only file nginx will execute. Everything the browser asks for lands
 // here and is routed from this one place.
 //
-// Step 1 covers: signing in, choosing a language, and an overview that shows
-// an empty database honestly. The remaining pages are already in the menu,
-// shown as not yet available, so the shape of the application is visible
-// from the start.
+// Steps so far: signing in, language, overview, and sources (step 2).
+// The inventory pages arrive in step 4 and are shown in the menu as not yet
+// available, so the shape of the application is visible from the start.
 
 declare(strict_types=1);
 
 use DcInfraSnap\Core\Database;
+use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
+use DcInfraSnap\Integration\IntegrationRepository;
+use DcInfraSnap\Source\VCenter\ClientFactory;
+use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
+use DcInfraSnap\Web\Flash;
 use DcInfraSnap\Web\View;
 
 $config = require dirname(__DIR__) . '/config/bootstrap.php';
@@ -31,17 +35,13 @@ $auth->startSession();
 // -----------------------------------------------------------------------
 // Language
 //
-// ?lang=de switches language and is remembered for the session. An unknown
-// code is ignored rather than treated as an error — a stray value in a URL
-// should not break the page. After switching, redirect to the same path
-// without the parameter, so the choice does not ride along in every link.
+// ?lang=de switches language and is remembered for the session. Only a
+// language that actually exists is remembered; anything else is dropped and
+// the current choice stays as it was.
 // -----------------------------------------------------------------------
 $requestedLocale = isset($_GET['lang']) ? (string) $_GET['lang'] : null;
 
 if ($requestedLocale !== null) {
-    // Only a language that actually exists is remembered. Anything else is
-    // dropped and the current choice stays as it was — a mangled link should
-    // not quietly put the interface back into English.
     if (isset(Translator::available($config['lang_dir'])[$requestedLocale])) {
         $_SESSION['locale'] = $requestedLocale;
     }
@@ -64,10 +64,8 @@ $translator = new Translator(
 );
 
 // -----------------------------------------------------------------------
-// The menu.
-//
-// Pages arrive over the following steps; until then they appear disabled
-// rather than as links that lead nowhere.
+// The menu. Pages arrive over the following steps; until then they appear
+// disabled rather than as links that lead nowhere.
 // -----------------------------------------------------------------------
 $nav = [
     ['path' => '/',             'key' => 'nav.overview',     'enabled' => true],
@@ -77,7 +75,7 @@ $nav = [
     ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => false],
     ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => false],
     ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => false],
-    ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => false],
+    ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
     ['path' => '/database',     'key' => 'nav.database',     'enabled' => false],
 ];
 
@@ -87,7 +85,8 @@ $view->share('nav', $nav)
      ->share('languages', Translator::available($config['lang_dir']))
      ->share('currentLocale', $locale)
      ->share('appName', (string) $config['app_name'])
-     ->share('isLoggedIn', $auth->isLoggedIn());
+     ->share('isLoggedIn', $auth->isLoggedIn())
+     ->share('flashes', []);
 
 /** Send a response and stop. */
 $respond = static function (string $html, int $status = 200): never {
@@ -122,9 +121,7 @@ if ($path === '/login') {
         } elseif ($auth->attempt((string) ($_POST['password'] ?? ''))) {
             $redirect('/');
         } else {
-            $error = $auth->lockedForSeconds() > 0
-                ? 'login.rate_limited'
-                : 'login.failed';
+            $error = $auth->lockedForSeconds() > 0 ? 'login.rate_limited' : 'login.failed';
         }
     }
 
@@ -151,28 +148,60 @@ if (!$auth->isLoggedIn()) {
     $redirect('/login');
 }
 
+$csrfToken = $auth->csrfToken();
+
 $view->share('isLoggedIn', true)
-     ->share('csrfToken', $auth->csrfToken());
+     ->share('csrfToken', $csrfToken)
+     ->share('flashes', Flash::take());
 
 // -----------------------------------------------------------------------
-// Unknown address: answered here, before the database is touched. A typo in
-// a URL has no business opening a connection.
+// Match the address before the database is opened. A typo in a URL has no
+// business making a connection.
+//
+// $route ends up as a name, and $id as the source it refers to, if any.
 // -----------------------------------------------------------------------
-$routes = ['/'];
+$route = null;
+$id    = null;
 
-if (!in_array($path, $routes, true)) {
+if ($path === '/') {
+    $route = 'overview';
+} elseif ($path === '/integrations') {
+    $route = 'integrations.index';
+} elseif ($path === '/integrations/add') {
+    $route = 'integrations.add';
+} elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle)$#', $path, $m) === 1) {
+    $route = 'integrations.' . $m[2];
+    $id    = (int) $m[1];
+}
+
+if ($route === null) {
     $respond($view->render('error', [
         'title'   => $translator->t('error.not_found'),
         'message' => null,
     ]), 404);
 }
 
+// Actions that change something are POST only, so they cannot be triggered
+// by a link, a prefetch or an image tag.
+if (in_array($route, ['integrations.test', 'integrations.toggle'], true) && $method !== 'POST') {
+    $respond($view->render('error', [
+        'title'   => $translator->t('error.not_found'),
+        'message' => null,
+    ]), 405);
+}
+
+// Every POST carries the session token.
+if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
+    Flash::error($translator->t('error.csrf'));
+    $redirect($path === '/integrations/add' ? '/integrations' : '/integrations');
+}
+
 // -----------------------------------------------------------------------
-// Database. A missing schema is a normal state right after installation,
-// so it gets an explanation and the command to run, not a stack trace.
+// Database. A missing schema is a normal state right after installation, so
+// it gets an explanation and the command to run, not a stack trace.
 // -----------------------------------------------------------------------
 try {
-    $pdo       = Database::connect($config['db']);
+    $pdo        = Database::connect($config['db']);
     $isMigrated = Database::isMigrated($pdo);
 } catch (Throwable $e) {
     $respond($view->render('error', [
@@ -185,8 +214,10 @@ if (!$isMigrated) {
     $respond($view->render('setup'));
 }
 
-// --- Overview ----------------------------------------------------------
-if ($path === '/') {
+// -----------------------------------------------------------------------
+// Overview
+// -----------------------------------------------------------------------
+if ($route === 'overview') {
     $counts = [
         'integrations' => (int) $pdo->query('SELECT COUNT(*) FROM integration')->fetchColumn(),
         'runs'         => (int) $pdo->query('SELECT COUNT(*) FROM discovery_run')->fetchColumn(),
@@ -209,10 +240,263 @@ if ($path === '/') {
     ]));
 }
 
-// Unreachable: $routes above is the single list of what exists, and anything
-// not on it was answered with a 404 before the database was opened. If this
-// line is ever reached, a route was added to that list without a handler.
+// =======================================================================
+// Sources
+//
+// Everything below needs the encryption key. A missing or malformed
+// SECRET_KEY is a configuration problem, and saying so beats an exception
+// from somewhere inside the repository.
+// =======================================================================
+try {
+    $secret = new Secret($config['secret_key']);
+} catch (Throwable $e) {
+    $respond($view->render('error', [
+        'title'   => $translator->t('error.server'),
+        'message' => $e->getMessage(),
+    ]), 500);
+}
+
+$repo = new IntegrationRepository($pdo, $secret);
+
+/**
+ * The source this route refers to, or a 404.
+ */
+$requireIntegration = static function (?int $id) use ($repo, $view, $translator, $respond) {
+    $integration = $id === null ? null : $repo->find($id);
+
+    if ($integration === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    return $integration;
+};
+
+/**
+ * Read and check the form. Returns the values and the problems with them.
+ *
+ * @return array{values: array<string, string>, errors: list<string>}
+ */
+$readForm = static function (bool $requirePassword) use ($translator): array {
+    $values = [
+        'name'        => trim((string) ($_POST['name'] ?? '')),
+        'hostname'    => trim((string) ($_POST['hostname'] ?? '')),
+        'port'        => trim((string) ($_POST['port'] ?? '443')),
+        'username'    => trim((string) ($_POST['username'] ?? '')),
+        'verify_peer' => isset($_POST['verify_peer']) ? '1' : '0',
+    ];
+
+    $errors = [];
+
+    if ($values['name'] === '') {
+        $errors[] = $translator->t('integrations.error_name');
+    }
+
+    if ($values['hostname'] === '') {
+        $errors[] = $translator->t('integrations.error_hostname');
+    } elseif (preg_match('#^https?://#i', $values['hostname']) === 1) {
+        // People paste the whole URL out of the browser. Saying so is more
+        // use than letting the connection fail later with a DNS error.
+        $errors[] = $translator->t('integrations.error_hostname_url');
+    }
+
+    $port = (int) $values['port'];
+
+    if ($port < 1 || $port > 65535) {
+        $errors[] = $translator->t('integrations.error_port');
+    }
+
+    if ($values['username'] === '') {
+        $errors[] = $translator->t('integrations.error_username');
+    }
+
+    if ($requirePassword && (string) ($_POST['password'] ?? '') === '') {
+        $errors[] = $translator->t('integrations.error_password');
+    }
+
+    return ['values' => $values, 'errors' => $errors];
+};
+
+// --- The list ----------------------------------------------------------
+if ($route === 'integrations.index') {
+    $respond($view->render('integrations/index', [
+        'integrations' => $repo->all(),
+    ]));
+}
+
+// --- Add ---------------------------------------------------------------
+if ($route === 'integrations.add') {
+    $values = ['port' => '443'];
+    $errors = [];
+
+    if ($method === 'POST') {
+        ['values' => $values, 'errors' => $errors] = $readForm(true);
+
+        if ($errors === []) {
+            try {
+                $newId = $repo->create(
+                    name: $values['name'],
+                    hostname: $values['hostname'],
+                    username: $values['username'],
+                    password: (string) $_POST['password'],
+                    port: (int) $values['port'],
+                    verifyPeer: $values['verify_peer'] === '1',
+                );
+
+                Flash::success($translator->t('integrations.added', ['name' => $values['name']]));
+                Flash::info($translator->t('integrations.added_hint'));
+
+                $redirect('/integrations');
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+            }
+        }
+    }
+
+    $respond($view->render('integrations/form', [
+        'integration' => null,
+        'values'      => $values,
+        'errors'      => $errors,
+    ]));
+}
+
+$integration = $requireIntegration($id);
+
+// --- Edit --------------------------------------------------------------
+if ($route === 'integrations.edit') {
+    $values = [
+        'name'        => $integration->name,
+        'hostname'    => $integration->hostname,
+        'port'        => (string) $integration->port,
+        'username'    => $integration->username,
+        'verify_peer' => $integration->verifyPeer ? '1' : '0',
+    ];
+
+    $errors = [];
+
+    if ($method === 'POST') {
+        ['values' => $values, 'errors' => $errors] = $readForm(false);
+
+        if ($errors === []) {
+            try {
+                $repo->update(
+                    id: $integration->id,
+                    name: $values['name'],
+                    hostname: $values['hostname'],
+                    port: (int) $values['port'],
+                    username: $values['username'],
+                    verifyPeer: $values['verify_peer'] === '1',
+                );
+
+                Flash::success($translator->t('integrations.saved'));
+                $redirect('/integrations');
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+            }
+        }
+    }
+
+    $respond($view->render('integrations/form', [
+        'integration' => $integration,
+        'values'      => $values,
+        'errors'      => $errors,
+    ]));
+}
+
+// --- Change the password -----------------------------------------------
+if ($route === 'integrations.password') {
+    $errors = [];
+
+    if ($method === 'POST') {
+        $password = (string) ($_POST['password'] ?? '');
+        $repeat   = (string) ($_POST['password_repeat'] ?? '');
+
+        if ($password === '') {
+            $errors[] = $translator->t('integrations.error_password');
+        } elseif (!hash_equals($password, $repeat)) {
+            $errors[] = $translator->t('integrations.error_password_match');
+        }
+
+        if ($errors === []) {
+            $repo->updatePassword($integration->id, $password);
+
+            Flash::success($translator->t('integrations.password_saved'));
+            Flash::info($translator->t('integrations.added_hint'));
+
+            $redirect('/integrations');
+        }
+    }
+
+    $respond($view->render('integrations/password', [
+        'integration' => $integration,
+        'errors'      => $errors,
+    ]));
+}
+
+// --- Test the connection -----------------------------------------------
+if ($route === 'integrations.test') {
+    $factory = new ClientFactory(timeout: 30);
+
+    try {
+        $client = $factory->make($integration, $repo->password($integration->id));
+        $result = $client->testConnection();
+
+        $message = $translator->t('integrations.test_ok_message', [
+            'version' => $result['full_name'] ?? $result['version'] ?? '?',
+        ]);
+
+        $repo->recordTest($integration->id, true, $message, $result['version']);
+        Flash::success($integration->name . ': ' . $message);
+    } catch (VCenterException $e) {
+        $repo->recordTest($integration->id, false, $e->getMessage());
+        Flash::error($integration->name . ': ' . $e->getMessage());
+    } catch (Throwable $e) {
+        // Anything else is ours, not the vCenter's — a missing key, most
+        // likely. It is recorded the same way so the row does not keep
+        // showing a stale success.
+        $repo->recordTest($integration->id, false, $e->getMessage());
+        Flash::error($integration->name . ': ' . $e->getMessage());
+    }
+
+    $redirect('/integrations');
+}
+
+// --- Enable / disable --------------------------------------------------
+if ($route === 'integrations.toggle') {
+    $repo->setActive($integration->id, !$integration->isActive);
+
+    Flash::success($translator->t(
+        $integration->isActive ? 'integrations.disabled_now' : 'integrations.enabled_now',
+        ['name' => $integration->name]
+    ));
+
+    $redirect('/integrations');
+}
+
+// --- Delete ------------------------------------------------------------
+if ($route === 'integrations.delete') {
+    if ($method === 'POST') {
+        try {
+            $repo->delete($integration->id);
+            Flash::success($translator->t('integrations.deleted', ['name' => $integration->name]));
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+        }
+
+        $redirect('/integrations');
+    }
+
+    $respond($view->render('integrations/delete', [
+        'integration' => $integration,
+        'counts'      => $repo->collectedCounts($integration->id),
+    ]));
+}
+
+// Unreachable: the matcher above is the single list of what exists. If this
+// line is ever reached, a route was added there without a handler.
 $respond($view->render('error', [
     'title'   => $translator->t('error.server'),
-    'message' => $config['is_dev'] ? 'Route "' . $path . '" is listed but has no handler.' : null,
+    'message' => $config['is_dev'] ? 'Route "' . $route . '" is matched but has no handler.' : null,
 ]), 500);

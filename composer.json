@@ -10,7 +10,7 @@
         "ext-json": "*",
         "ext-mbstring": "*",
         "ext-sodium": "*",
-        "ext-soap": "*",
+        "ext-curl": "*",
         "ext-pcntl": "*"
     },
     "autoload": {

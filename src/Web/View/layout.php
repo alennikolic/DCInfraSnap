@@ -17,10 +17,12 @@
 /** @var array<string, string> $languages */
 /** @var string $currentLocale */
 /** @var string|null $csrfToken */
+/** @var list<array{type: string, message: string}> $flashes */
 
 use DcInfraSnap\Web\View;
 
 $csrfToken ??= null;
+$flashes ??= [];
 ?>
 <!doctype html>
 <html lang="<?= $e($locale) ?>">
@@ -83,6 +85,12 @@ $csrfToken ??= null;
 <?php endif; ?>
 
 <main class="content">
+    <?php if (($flashes ?? []) !== []): ?>
+        <?php foreach ($flashes as $flash): ?>
+            <div class="alert alert-<?= $e($flash['type']) ?>"><?= $e($flash['message']) ?></div>
+        <?php endforeach; ?>
+    <?php endif; ?>
+
     <?= $body ?>
 </main>
 

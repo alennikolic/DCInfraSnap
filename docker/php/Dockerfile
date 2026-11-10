@@ -17,8 +17,11 @@ RUN apk add --no-cache \
 # PHPIZE_DEPS and the *-dev packages are installed temporarily and removed
 # after the build, to keep the image small.
 #
-# soap is what talks to vCenter (vim25). pcntl is what lets the worker
-# finish its current job on SIGTERM instead of dying halfway through.
+# curl is what talks to vCenter: the vim25 client builds its own SOAP XML
+# rather than using ext-soap, whose WSDL handling vSphere does not get along
+# with. curl is compiled into the official PHP image already.
+# pcntl is what lets the worker finish its current job on SIGTERM instead of
+# dying halfway through.
 RUN apk add --no-cache --virtual .build-deps \
         $PHPIZE_DEPS \
         libsodium-dev \
@@ -27,7 +30,6 @@ RUN apk add --no-cache --virtual .build-deps \
     && docker-php-ext-install -j"$(nproc)" \
         pdo_mysql \
         sodium \
-        soap \
         intl \
         opcache \
         pcntl \
