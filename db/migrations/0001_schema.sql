@@ -542,7 +542,12 @@ CREATE TABLE vc_datastore (
     name             VARCHAR(255)      NOT NULL,
 
     type             VARCHAR(32)       DEFAULT NULL COMMENT 'VMFS, NFS, vsan',
-    accessible       TINYINT(1)        DEFAULT NULL,
+
+    -- is_accessible, not accessible: ACCESSIBLE is a reserved word in MySQL
+    -- and an unquoted column of that name is a syntax error. Renaming beats
+    -- backquoting it forever.
+    is_accessible    TINYINT(1)        DEFAULT NULL,
+
     maintenance_mode VARCHAR(32)       DEFAULT NULL,
 
     capacity_bytes   BIGINT UNSIGNED   DEFAULT NULL,
