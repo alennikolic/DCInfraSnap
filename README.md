@@ -23,7 +23,7 @@ It is not a synchronisation tool and it does not write to anything. It reads, re
 
 ### Languages
 
-The interface is **English by default**. German, Serbian and Russian are prepared: the translation layer is in place and the language picker appears as soon as a second language file exists. Code, comments, keys and documentation stay in English.
+The interface is **English by default**, and also available in **German, Serbian and Russian** — all three complete. The picker sits in the header; the choice is remembered for the session. `APP_LOCALE` in `.env` sets which language a visitor gets before choosing. Code, comments, keys and documentation stay in English.
 
 Adding a language is one file — see [Translating](#translating).
 
@@ -292,13 +292,16 @@ The schema lives in numbered SQL files under `db/migrations/`. The migrator reco
 
 The interface is English, and English is the fallback for every other language. A key missing from a translation is served from English rather than from a blank space, so a half-finished language is still a usable interface.
 
-To add German:
+English, German, Serbian and Russian are all complete. To add another:
 
 ```bash
-cp lang/en.php lang/de.php
+cp lang/en.php lang/fr.php
 # translate the values, leave the keys alone
 docker compose exec app php bin/dcinfrasnap lang:check
 ```
+
+Add the code to `Translator::PLANNED` and it appears in the picker. Serbian is
+written in Latin script; for Cyrillic, that one file is all there is to change.
 
 The language picker appears in the header as soon as a second language file exists. A visitor picks a language with `?lang=de`, and the choice is remembered for the session.
 
@@ -317,7 +320,7 @@ The language picker appears in the header as soon as a second language file exis
 | 3 | **Done** — SOAP collector, worker, run history, change journal |
 | 4 | **Done** — Inventory pages: machines, hosts, clusters, datastores, licences, CSV export |
 
-Next: host devices (NICs, kernel adapters, HBAs), port groups and switches, scheduled collection, user accounts and the remaining languages.
+Next: host devices (NICs, kernel adapters, HBAs), port groups and switches, and user accounts.
 
 ### Scheduling a collection
 
