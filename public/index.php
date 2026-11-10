@@ -14,6 +14,7 @@ use DcInfraSnap\Core\Database;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
 use DcInfraSnap\Integration\IntegrationRepository;
+use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
@@ -169,7 +170,7 @@ if ($path === '/') {
     $route = 'integrations.index';
 } elseif ($path === '/integrations/add') {
     $route = 'integrations.add';
-} elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle)$#', $path, $m) === 1) {
+} elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
 }
@@ -183,7 +184,8 @@ if ($route === null) {
 
 // Actions that change something are POST only, so they cannot be triggered
 // by a link, a prefetch or an image tag.
-if (in_array($route, ['integrations.test', 'integrations.toggle'], true) && $method !== 'POST') {
+if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect'], true)
+    && $method !== 'POST') {
     $respond($view->render('error', [
         'title'   => $translator->t('error.not_found'),
         'message' => null,
@@ -457,6 +459,28 @@ if ($route === 'integrations.test') {
         // likely. It is recorded the same way so the row does not keep
         // showing a stale success.
         $repo->recordTest($integration->id, false, $e->getMessage());
+        Flash::error($integration->name . ': ' . $e->getMessage());
+    }
+
+    $redirect('/integrations');
+}
+
+// --- Queue a collection ------------------------------------------------
+//
+// The GUI only queues; the worker does the collecting. A large vCenter takes
+// minutes, which would outlast the web request — and a browser tab is a poor
+// place to hold a job that must not be interrupted.
+if ($route === 'integrations.collect') {
+    $runs = new RunRepository($pdo);
+
+    try {
+        $runId = $runs->queue($integration->id, 'gui');
+
+        Flash::success($translator->t('integrations.queued', [
+            'name' => $integration->name,
+            'run'  => $runId,
+        ]));
+    } catch (Throwable $e) {
         Flash::error($integration->name . ': ' . $e->getMessage());
     }
 

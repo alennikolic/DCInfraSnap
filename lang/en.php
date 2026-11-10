@@ -95,6 +95,8 @@ return [
     'integrations.credentials_note'  => 'Credentials are encrypted with SECRET_KEY and decrypted only at the '
                                         . 'moment of signing in to vCenter. They are never shown again.',
 
+    'integrations.collect'           => 'Collect',
+    'integrations.queued'            => ':name queued as run :run. The worker picks it up within a few seconds.',
     'integrations.test'              => 'Test',
     'integrations.test_ok'           => 'OK',
     'integrations.test_failed'       => 'Failed',

@@ -84,6 +84,15 @@ $state = static function (?bool $ok) use ($e, $t): string {
                     </td>
 
                     <td class="actions">
+                        <?php if ($i->isActive): ?>
+                            <form method="post" action="/integrations/<?= (int) $i->id ?>/collect" class="inline">
+                                <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
+                                <button type="submit" class="btn btn-small btn-primary btn-inline">
+                                    <?= $e($t('integrations.collect')) ?>
+                                </button>
+                            </form>
+                        <?php endif; ?>
+
                         <form method="post" action="/integrations/<?= (int) $i->id ?>/test" class="inline">
                             <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
                             <button type="submit" class="btn btn-small">

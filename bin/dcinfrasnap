@@ -18,6 +18,12 @@
 //   bin/dcinfrasnap integration:enable <id>
 //   bin/dcinfrasnap integration:disable <id>
 //   bin/dcinfrasnap integration:delete <id>    remove it and everything collected
+//   bin/dcinfrasnap collect:dry <id>     collect and report, write nothing
+//   bin/dcinfrasnap discover <id>        collect and store, now
+//   bin/dcinfrasnap discover:queue <id>  put on the queue for the worker
+//   bin/dcinfrasnap discover:queue --all queue every active source
+//   bin/dcinfrasnap runs                 recent collections
+//   bin/dcinfrasnap runs:reset <run>     release a stuck run
 //   bin/dcinfrasnap worker               process the collection queue
 //
 // In Docker:
@@ -39,7 +45,11 @@ use DcInfraSnap\Core\Database;
 use DcInfraSnap\Core\Migrator;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
+use DcInfraSnap\Collector\Collector;
 use DcInfraSnap\Integration\IntegrationRepository;
+use DcInfraSnap\Inventory\InventoryRepository;
+use DcInfraSnap\Inventory\RawObjectRepository;
+use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 
@@ -114,7 +124,13 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  integration:disable <id>');
     $stdout('  integration:delete <id>     remove it and everything collected');
     $stdout();
-    $stdout('  worker               process the collection queue');
+    $stdout('  collect:dry <id>            collect and report, write nothing');
+    $stdout('  discover <id>               collect and store, now');
+    $stdout('  discover:queue <id>         put on the queue for the worker');
+    $stdout('  discover:queue --all        queue every active source');
+    $stdout('  runs                        recent collections');
+    $stdout('  runs:reset <run>            release a stuck run');
+    $stdout('  worker                      process the collection queue');
     $stdout('  help                 this list');
     $stdout();
     $stdout('In Docker:  docker compose exec app php bin/dcinfrasnap <command>');
@@ -566,38 +582,256 @@ if (str_starts_with($command, 'integration')) {
     exit(1);
 }
 
-// --- worker --------------------------------------------------------------
-//
-// Takes queued runs and carries them out. The collector arrives in step 3;
-// until then the worker runs, answers signals and leaves the queue alone.
-// It exists now so the stack does not change shape later.
-if ($command === 'worker') {
-    $running = true;
-
-    if (function_exists('pcntl_async_signals')) {
-        pcntl_async_signals(true);
-
-        // Finish what is in hand, then exit. Without this, docker compose
-        // stop/restart kills a run halfway and leaves it locked.
-        $stop = static function () use (&$running, $stdout): void {
-            $stdout('Signal received, stopping after the current job.');
-            $running = false;
-        };
-
-        pcntl_signal(SIGTERM, $stop);
-        pcntl_signal(SIGINT, $stop);
+// =======================================================================
+// Collecting
+// =======================================================================
+if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'runs:reset', 'worker'], true)) {
+    try {
+        $secret = new Secret($config['secret_key']);
+    } catch (Throwable $e) {
+        $stderr($e->getMessage());
+        exit(1);
     }
 
-    $stdout($config['app_name'] . ' worker started. Polling every 5 s.');
-    $stdout('No collector yet — queued runs are left untouched (arrives in step 3).');
+    $integrations = new IntegrationRepository($pdo, $secret);
+    $runs         = new RunRepository($pdo);
 
-    while ($running) {
-        // Step 3 replaces this with: claim a queued run, collect, record it.
-        sleep(5);
+    $makeCollector = static fn (?callable $reporter = null): Collector => new Collector(
+        $integrations,
+        $runs,
+        new InventoryRepository($pdo),
+        new RawObjectRepository($pdo),
+        new ClientFactory(timeout: 300),
+        $reporter,
+    );
+
+    /** The source named by the first argument. */
+    $requireSource = static function () use ($argv, $integrations, $stderr) {
+        $id = isset($argv[2]) ? (int) $argv[2] : 0;
+
+        if ($id < 1) {
+            $stderr('Which source? Give its number, e.g. discover 1');
+            $stderr('List them with: integrations');
+            exit(1);
+        }
+
+        $integration = $integrations->find($id);
+
+        if ($integration === null) {
+            $stderr("There is no source with number {$id}.");
+            exit(1);
+        }
+
+        return $integration;
+    };
+
+    // --- runs ------------------------------------------------------------
+    if ($command === 'runs') {
+        $recent = $runs->recent(25);
+
+        if ($recent === []) {
+            $stdout('No collections yet. Start one with: bin/dcinfrasnap discover 1');
+            exit(0);
+        }
+
+        $stdout(sprintf(
+            '%-5s %-20s %-9s %-19s %7s %7s %7s %7s %7s %6s',
+            'RUN', 'SOURCE', 'STATUS', 'QUEUED (UTC)',
+            'CLUSTER', 'HOST', 'VM', 'DSTORE', 'LIC', 'CALLS'
+        ));
+        $stdout(str_repeat('-', 118));
+
+        foreach ($recent as $run) {
+            $stdout(sprintf(
+                '%-5d %-20s %-9s %-19s %7s %7s %7s %7s %7s %6d',
+                $run['id'],
+                mb_strimwidth((string) $run['integration_name'], 0, 20, '..'),
+                $run['status'],
+                (string) $run['queued_at'],
+                $run['clusters_status'] === 'ok' ? $run['clusters_found'] : strtoupper((string) $run['clusters_status']),
+                $run['hosts_status'] === 'ok' ? $run['hosts_found'] : strtoupper((string) $run['hosts_status']),
+                $run['vms_status'] === 'ok' ? $run['vms_found'] : strtoupper((string) $run['vms_status']),
+                $run['datastores_status'] === 'ok' ? $run['datastores_found'] : strtoupper((string) $run['datastores_status']),
+                $run['licenses_status'] === 'ok' ? $run['licenses_found'] : strtoupper((string) $run['licenses_status']),
+                $run['api_calls']
+            ));
+
+            if ($run['error_message'] !== null) {
+                $stdout('      ' . mb_strimwidth((string) $run['error_message'], 0, 110, '..'));
+            }
+        }
+
+        $stdout();
+        exit(0);
     }
 
-    $stdout('Worker stopped.');
-    exit(0);
+    // --- runs:reset -------------------------------------------------------
+    if ($command === 'runs:reset') {
+        $runId = isset($argv[2]) ? (int) $argv[2] : 0;
+
+        if ($runId < 1) {
+            $stderr('Which run? Give its number, e.g. runs:reset 7');
+            exit(1);
+        }
+
+        if ($runs->reset($runId)) {
+            $stdout("Run {$runId} released. The source is no longer locked.");
+            exit(0);
+        }
+
+        $stderr("Run {$runId} is not queued or running; nothing to release.");
+        exit(1);
+    }
+
+    // --- collect:dry ------------------------------------------------------
+    //
+    // Fetch everything and report it, writing nothing. Useful before the
+    // first real collection: it shows what the account can actually see.
+    if ($command === 'collect:dry') {
+        $integration = $requireSource();
+
+        $collector = $makeCollector($stdout);
+        $result    = $collector->run($integration, 0, dryRun: true);
+
+        $stdout();
+        $stdout('Nothing was written. SOAP calls: ' . $result['api_calls']);
+
+        exit($result['status'] === 'failed' ? 1 : 0);
+    }
+
+    // --- discover ---------------------------------------------------------
+    if ($command === 'discover') {
+        $integration = $requireSource();
+
+        try {
+            $runId = $runs->startDirect($integration->id, 'cli');
+        } catch (Throwable $e) {
+            $stderr($e->getMessage());
+            $stderr('Release a stuck run with: runs:reset <number>');
+            exit(1);
+        }
+
+        $stdout("Run {$runId} for {$integration->name}.");
+
+        $result = $makeCollector($stdout)->run($integration, $runId);
+
+        $stdout();
+        $stdout(sprintf(
+            'Finished: %s. SOAP calls: %d.',
+            strtoupper($result['status']),
+            $result['api_calls']
+        ));
+
+        exit($result['status'] === 'failed' ? 1 : 0);
+    }
+
+    // --- discover:queue ---------------------------------------------------
+    if ($command === 'discover:queue') {
+        $all = ($argv[2] ?? '') === '--all';
+
+        $targets = $all
+            ? $integrations->all(onlyActive: true)
+            : [$requireSource()];
+
+        if ($targets === []) {
+            $stdout('No active sources to queue.');
+            exit(0);
+        }
+
+        $queued = 0;
+
+        foreach ($targets as $integration) {
+            try {
+                $runId = $runs->queue($integration->id, $all ? 'schedule' : 'cli');
+                $stdout("Queued run {$runId} for {$integration->name}.");
+                $queued++;
+            } catch (Throwable $e) {
+                // With --all this is routine: one source still collecting
+                // should not stop the others being queued.
+                $stdout("Skipped {$integration->name}: " . $e->getMessage());
+            }
+        }
+
+        $stdout();
+        $stdout("Queued: {$queued}. The worker picks them up within 5 seconds.");
+        exit(0);
+    }
+
+    // --- worker -----------------------------------------------------------
+    //
+    // Takes queued runs and carries them out.
+    if ($command === 'worker') {
+        $running = true;
+
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+
+            // Finish what is in hand, then exit. Without this, docker compose
+            // stop/restart kills a run halfway and leaves it locked until the
+            // stale timeout expires.
+            $stop = static function () use (&$running, $stdout): void {
+                $stdout('Signal received; stopping after the current job.');
+                $running = false;
+            };
+
+            pcntl_signal(SIGTERM, $stop);
+            pcntl_signal(SIGINT, $stop);
+        }
+
+        $stdout($config['app_name'] . ' worker started. Polling every 5 s.');
+
+        while ($running) {
+            // Runs whose worker died stay 'running' and keep their source
+            // locked. Releasing them is part of every pass, not a separate
+            // chore somebody has to remember.
+            $released = $runs->releaseStale();
+
+            if ($released > 0) {
+                $stdout("Released {$released} run(s) with no sign of life.");
+            }
+
+            $claimed = null;
+
+            try {
+                $claimed = $runs->claimNext();
+            } catch (Throwable $e) {
+                $stderr('Cannot read the queue: ' . $e->getMessage());
+            }
+
+            if ($claimed === null) {
+                sleep(5);
+                continue;
+            }
+
+            $runId       = (int) $claimed['id'];
+            $integration = $integrations->find((int) $claimed['integration_id']);
+
+            if ($integration === null) {
+                $runs->finish($runId, 'failed', 0, 'The source was deleted before the run started.');
+                continue;
+            }
+
+            $stdout("Run {$runId}: {$integration->name}");
+
+            try {
+                $result = $makeCollector($stdout)->run($integration, $runId);
+
+                $stdout(sprintf(
+                    "Run {$runId} finished: %s, %d SOAP calls.",
+                    strtoupper($result['status']),
+                    $result['api_calls']
+                ));
+            } catch (Throwable $e) {
+                // The collector handles its own failures; anything reaching
+                // here is unexpected, and the run must not be left running.
+                $runs->finish($runId, 'failed', 0, $e->getMessage());
+                $stderr("Run {$runId} failed unexpectedly: " . $e->getMessage());
+            }
+        }
+
+        $stdout('Worker stopped.');
+        exit(0);
+    }
 }
 
 // --- unknown -------------------------------------------------------------
