@@ -14,11 +14,15 @@ use DcInfraSnap\Core\Database;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
 use DcInfraSnap\Integration\IntegrationRepository;
+use DcInfraSnap\Inventory\InventoryQuery;
+use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
+use DcInfraSnap\Web\Csv;
 use DcInfraSnap\Web\Flash;
+use DcInfraSnap\Web\Format;
 use DcInfraSnap\Web\View;
 
 $config = require dirname(__DIR__) . '/config/bootstrap.php';
@@ -70,14 +74,14 @@ $translator = new Translator(
 // -----------------------------------------------------------------------
 $nav = [
     ['path' => '/',             'key' => 'nav.overview',     'enabled' => true],
-    ['path' => '/vms',          'key' => 'nav.vms',          'enabled' => false],
-    ['path' => '/hosts',        'key' => 'nav.hosts',        'enabled' => false],
-    ['path' => '/clusters',     'key' => 'nav.clusters',     'enabled' => false],
-    ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => false],
-    ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => false],
-    ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => false],
+    ['path' => '/vms',          'key' => 'nav.vms',          'enabled' => true],
+    ['path' => '/hosts',        'key' => 'nav.hosts',        'enabled' => true],
+    ['path' => '/clusters',     'key' => 'nav.clusters',     'enabled' => true],
+    ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => true],
+    ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => true],
+    ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
     ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
-    ['path' => '/database',     'key' => 'nav.database',     'enabled' => false],
+    ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
 ];
 
 $view = new View($config['views_dir'], $translator);
@@ -88,6 +92,30 @@ $view->share('nav', $nav)
      ->share('appName', (string) $config['app_name'])
      ->share('isLoggedIn', $auth->isLoggedIn())
      ->share('flashes', []);
+
+/**
+ * The machine filters, read from the query string.
+ *
+ * Defined once because the list and the export must agree: an export that
+ * quietly ignored a filter would hand someone a file that does not match
+ * what they were looking at.
+ *
+ * @return array<string, string>
+ */
+function self_vm_filters(): array
+{
+    $filters = [];
+
+    foreach (['q', 'integration', 'power', 'cluster', 'host', 'template', 'missing'] as $name) {
+        $value = trim((string) ($_GET[$name] ?? ''));
+
+        if ($value !== '') {
+            $filters[$name] = $value;
+        }
+    }
+
+    return $filters;
+}
 
 /** Send a response and stop. */
 $respond = static function (string $html, int $status = 200): never {
@@ -173,6 +201,19 @@ if ($path === '/') {
 } elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
+} elseif ($path === '/vms/export') {
+    $route = 'vms.export';
+} elseif (preg_match('#^/(vms|hosts)/(\d+)$#', $path, $m) === 1) {
+    $route = $m[1] . '.show';
+    $id    = (int) $m[2];
+} elseif (preg_match('#^/runs/(\d+)/reset$#', $path, $m) === 1) {
+    $route = 'runs.reset';
+    $id    = (int) $m[1];
+} elseif (preg_match('#^/database/(\w+)$#', $path, $m) === 1) {
+    $route = 'database.show';
+    $table = $m[1];
+} elseif (in_array($path, ['/vms', '/hosts', '/clusters', '/datastores', '/licenses', '/runs', '/database'], true)) {
+    $route = ltrim($path, '/') . '.index';
 }
 
 if ($route === null) {
@@ -184,7 +225,7 @@ if ($route === null) {
 
 // Actions that change something are POST only, so they cannot be triggered
 // by a link, a prefetch or an image tag.
-if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect'], true)
+if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect', 'runs.reset'], true)
     && $method !== 'POST') {
     $respond($view->render('error', [
         'title'   => $translator->t('error.not_found'),
@@ -239,6 +280,157 @@ if ($route === 'overview') {
     $respond($view->render('overview/index', [
         'counts'  => $counts,
         'sources' => $sources,
+    ]));
+}
+
+// =======================================================================
+// Inventory
+// =======================================================================
+$inventory = new InventoryQuery($pdo);
+
+if (str_starts_with($route, 'vms.')) {
+    // --- Export ---------------------------------------------------------
+    if ($route === 'vms.export') {
+        $filters = self_vm_filters();
+
+        Csv::send(
+            Csv::filename('virtual-machines'),
+            [
+                'name', 'power_state', 'is_template', 'guest_configured', 'guest_reported',
+                'guest_hostname', 'guest_ip_address', 'instance_uuid', 'bios_uuid',
+                'cpu_count', 'cpu_cores_per_socket', 'memory_mib',
+                'disk_count', 'disk_capacity_bytes', 'nic_count',
+                'host', 'cluster', 'folder_path', 'source',
+                'first_seen_utc', 'last_seen_utc', 'notes',
+            ],
+            $inventory->vmsForExport($filters),
+            static fn (array $r): array => [
+                $r['name'], $r['power_state'], $r['is_template'],
+                $r['guest_os'], $r['guest_full_name'],
+                $r['guest_hostname'], $r['guest_ip_address'],
+                $r['instance_uuid'], $r['bios_uuid'],
+                $r['cpu_count'], $r['cpu_cores_per_socket'], $r['memory_mib'],
+                $r['disk_count'], $r['disk_capacity_bytes'], $r['nic_count'],
+                $r['host_name'], $r['cluster_name'], $r['folder_path'], $r['integration_name'],
+                $r['first_seen'], $r['last_seen'], $r['notes'],
+            ]
+        );
+    }
+
+    // --- One machine -----------------------------------------------------
+    if ($route === 'vms.show') {
+        $vm = $inventory->vm((int) $id);
+
+        if ($vm === null) {
+            $respond($view->render('error', [
+                'title'   => $translator->t('error.not_found'),
+                'message' => null,
+            ]), 404);
+        }
+
+        $respond($view->render('vms/show', [
+            'vm'      => $vm,
+            'changes' => $inventory->changes(ObjectType::get('vm'), (int) $id),
+        ]));
+    }
+
+    // --- The list --------------------------------------------------------
+    $filters = self_vm_filters();
+    $page    = max(1, (int) ($_GET['page'] ?? 1));
+    $result  = $inventory->vms($filters, $page);
+
+    $respond($view->render('vms/index', [
+        'rows'     => $result['rows'],
+        'total'    => $result['total'],
+        'page'     => $page,
+        'pages'    => max(1, (int) ceil($result['total'] / InventoryQuery::PER_PAGE)),
+        'filters'  => $filters,
+        'options'  => $inventory->vmFilterOptions(),
+        'lastRuns' => $inventory->lastSuccessfulRuns(),
+    ]));
+}
+
+if ($route === 'hosts.show') {
+    $host = $inventory->host((int) $id);
+
+    if ($host === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('hosts/show', [
+        'host'    => $host,
+        'vms'     => $inventory->vmsOnHost((int) $host['integration_id'], (string) $host['moref']),
+        'changes' => $inventory->changes(ObjectType::get('host'), (int) $id),
+    ]));
+}
+
+if ($route === 'hosts.index') {
+    $respond($view->render('hosts/index', [
+        'rows'     => $inventory->hosts(),
+        'lastRuns' => $inventory->lastSuccessfulRuns(),
+    ]));
+}
+
+if ($route === 'clusters.index') {
+    $respond($view->render('clusters/index', ['rows' => $inventory->clusters()]));
+}
+
+if ($route === 'datastores.index') {
+    $respond($view->render('datastores/index', ['rows' => $inventory->datastores()]));
+}
+
+if ($route === 'licenses.index') {
+    $respond($view->render('licenses/index', ['rows' => $inventory->licenses()]));
+}
+
+// --- Collection history ---------------------------------------------
+if ($route === 'runs.index') {
+    $respond($view->render('runs/index', [
+        'rows' => (new RunRepository($pdo))->recent(100),
+    ]));
+}
+
+if ($route === 'runs.reset') {
+    $runs = new RunRepository($pdo);
+
+    if ($runs->reset((int) $id)) {
+        Flash::success($translator->t('runs.released', ['run' => (int) $id]));
+    } else {
+        Flash::error($translator->t('runs.not_releasable', ['run' => (int) $id]));
+    }
+
+    $redirect('/runs');
+}
+
+// --- The database ----------------------------------------------------
+if ($route === 'database.index') {
+    $respond($view->render('database/index', [
+        'database' => (string) $config['db']['name'],
+        'tables'   => $inventory->tables((string) $config['db']['name']),
+    ]));
+}
+
+if ($route === 'database.show') {
+    $page   = max(1, (int) ($_GET['page'] ?? 1));
+    $result = $inventory->tableRows((string) $config['db']['name'], $table ?? '', $page);
+
+    if ($result === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('database/show', [
+        'table'   => $table,
+        'columns' => $result['columns'],
+        'rows'    => $result['rows'],
+        'total'   => $result['total'],
+        'page'    => $page,
+        'pages'   => max(1, (int) ceil($result['total'] / 50)),
     ]));
 }
 

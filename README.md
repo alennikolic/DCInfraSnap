@@ -4,7 +4,7 @@ Inventory of data centre infrastructure: collect it from the source, keep the hi
 
 The first source is **vCenter** — clusters, ESXi hosts, virtual machines, datastores and licenses, read over the vSphere SOAP API (vim25).
 
-> **Status:** step 1 of 4. The stack runs, the schema is in place, the interface signs you in and reports an empty database. Collection arrives in step 3.
+> **Status:** working. Collection, storage, the change journal, the worker and the web interface are all in place. Measured against a real vCenter: 2 clusters, 5 hosts, 161 machines, 15 datastores and 9 licences in 21 SOAP calls.
 
 ---
 
@@ -139,8 +139,23 @@ docker compose run --rm app php bin/dcinfrasnap password:hash
 # Translations
 docker compose exec app php bin/dcinfrasnap lang:check
 
+# Sources
+docker compose exec app php bin/dcinfrasnap integrations
+docker compose exec app php bin/dcinfrasnap integration:add
+docker compose exec app php bin/dcinfrasnap integration:test 1
+
+# Collecting
+docker compose exec app php bin/dcinfrasnap collect:dry 1        # collect and report, write nothing
+docker compose exec app php bin/dcinfrasnap discover 1           # collect and store, now
+docker compose exec app php bin/dcinfrasnap discover:queue --all # for cron
+docker compose exec app php bin/dcinfrasnap runs                 # recent collections
+docker compose exec app php bin/dcinfrasnap runs:reset 7         # release a stuck run
+
 docker compose exec app php bin/dcinfrasnap help
 ```
+
+`collect:dry` is worth running before the first real collection: it reports
+what the account can actually see, and writes nothing while doing it.
 
 ### Useful Docker commands
 
@@ -219,11 +234,24 @@ dcinfrasnap/
 └── src/
     ├── Core/{Database,Migrator,Secret}.php
     ├── I18n/Translator.php
+    ├── Integration/                # sources and their credentials
+    ├── Source/VCenter/             # the vim25 client and the collector
+    ├── Inventory/                  # object types, writing, reading
+    ├── Run/                        # the collection queue and its history
+    ├── Collector/                  # one run, start to finish
     └── Web/
-        ├── Auth.php
-        ├── View.php
+        ├── Auth.php, View.php, Flash.php, Csv.php, Format.php
         └── View/                   # templates
 ```
+
+**One object type, described once.** `Inventory/ObjectType` says where a kind
+of object is stored, which columns it has and what its run counters are
+called. `InventoryRepository` is then written once for all of them, and a
+sixth type is a few lines of description rather than a new class.
+
+**Volatile columns.** A column that moves on its own — host uptime — is stored
+and kept current but left out of the change comparison. Left in, it marks
+every host as changed on every run and buries the changes worth seeing.
 
 **Only `public/` is served.** The document root is `public/`, and nginx executes `index.php` and nothing else — any other `.php` file that ends up there returns 404.
 
@@ -285,11 +313,23 @@ The language picker appears in the header as soon as a second language file exis
 | Step | Content |
 |---|---|
 | 1 | **Done** — Docker stack, schema, CLI, translation layer, sign-in, overview |
-| 2 | Integrations: add a vCenter, encrypted credentials, connection test |
-| 3 | SOAP collector, worker, run history |
-| 4 | Inventory pages: VMs, hosts, clusters, datastores, licenses, CSV export |
+| 2 | **Done** — Sources: add a vCenter, encrypted credentials, connection test |
+| 3 | **Done** — SOAP collector, worker, run history, change journal |
+| 4 | **Done** — Inventory pages: machines, hosts, clusters, datastores, licences, CSV export |
 
-Later: host devices (NICs, kernel adapters, HBAs), port groups and switches, scheduled collection, user accounts.
+Next: host devices (NICs, kernel adapters, HBAs), port groups and switches, scheduled collection, user accounts and the remaining languages.
+
+### Scheduling a collection
+
+There is no scheduler inside the application. Cron queues the work and the
+worker picks it up:
+
+```
+17 */6 * * *  cd /root/dcinfrasnap && docker compose exec -T app php bin/dcinfrasnap discover:queue --all
+```
+
+Minute 17 rather than 0, deliberately — so it does not land at the same moment
+as everything else on the machine.
 
 ---
 

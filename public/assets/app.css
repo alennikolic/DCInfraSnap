@@ -27,6 +27,7 @@
     --ok:            #1f9254;
     --ok-soft:       #e7f6ed;
     --warn:          #b4690e;
+    --warn-soft:     #fdf3e3;
     --error:         #c1392b;
     --error-soft:    #fdecea;
 
@@ -56,6 +57,7 @@
         --ok:           #3fbf7f;
         --ok-soft:      #1d3328;
         --warn:         #d79a3a;
+        --warn-soft:    #3a2e1c;
         --error:        #e8705f;
         --error-soft:   #3a2422;
     }
@@ -601,4 +603,153 @@ tr.is-inactive td {
     .page-head {
         flex-direction: column;
     }
+}
+
+/* --- Filter bar -------------------------------------------------------- */
+
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 14px;
+}
+
+.filters select,
+.filters input[type="search"] {
+    width: auto;
+    padding: 7px 10px;
+    font-size: 13.5px;
+}
+
+.filter-search {
+    flex: 1 1 260px;
+    min-width: 200px;
+}
+
+.check-inline {
+    margin: 0;
+    font-size: 13.5px;
+    white-space: nowrap;
+}
+
+/* --- Detail pages ------------------------------------------------------ */
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 18px;
+    margin-bottom: 18px;
+}
+
+.detail-grid .panel { margin-bottom: 0; }
+
+.table-detail th {
+    width: 45%;
+    padding: 6px 10px 6px 0;
+    text-align: left;
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--panel-border);
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.table-detail td {
+    padding: 6px 0;
+    font-size: 13.5px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.table-detail tr:last-child th,
+.table-detail tr:last-child td { border-bottom: none; }
+
+.notes {
+    margin: 0;
+    padding: 12px 14px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Journal: what a value was, and what it became. */
+.old { color: var(--text-faint); text-decoration: line-through; }
+.new { color: var(--ok); }
+
+.delta {
+    margin-left: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ok);
+}
+
+.row-note td {
+    padding-top: 0;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+/* --- Capacity bars ----------------------------------------------------- */
+
+.bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 140px;
+}
+
+.bar {
+    flex: 1 1 auto;
+    height: 7px;
+    min-width: 60px;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 100px;
+    overflow: hidden;
+}
+
+.bar-fill {
+    height: 100%;
+    background: var(--ok);
+    border-radius: 100px;
+}
+
+.bar-fill.is-warn { background: var(--warn); }
+.bar-fill.is-high { background: var(--error); }
+
+.badge-warn { color: var(--warn); background: var(--warn-soft); }
+
+/* --- Paging ------------------------------------------------------------ */
+
+.pager {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 0 24px;
+}
+
+.pager-state {
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+/* --- Raw table view ---------------------------------------------------- */
+
+.panel-scroll {
+    overflow-x: auto;
+    padding: 0;
+}
+
+.table-raw {
+    font-size: 12.5px;
+    white-space: nowrap;
+}
+
+.table-raw th,
+.table-raw td {
+    padding: 6px 10px;
 }

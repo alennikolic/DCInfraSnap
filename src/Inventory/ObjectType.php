@@ -27,6 +27,7 @@ final class ObjectType
      * @param string       $changeKey   journal column pointing back at the row
      * @param list<string> $columns     columns a collector fills
      * @param string       $runPrefix   prefix of the discovery_run counters
+     * @param list<string> $volatile    columns kept current but never compared
      */
     public function __construct(
         public readonly string $key,
@@ -35,7 +36,23 @@ final class ObjectType
         public readonly string $changeKey,
         public readonly array $columns,
         public readonly string $runPrefix,
+        public readonly array $volatile = [],
     ) {
+    }
+
+    /**
+     * The columns that decide whether an object has changed.
+     *
+     * Volatile ones are left out. A column that moves on its own — a counter
+     * that only goes up — would otherwise report a change on every single
+     * run and bury the real ones. Such a column is still stored and still
+     * kept current; it just does not get a vote on what counts as a change.
+     *
+     * @return list<string>
+     */
+    public function comparedColumns(): array
+    {
+        return array_values(array_diff($this->columns, $this->volatile));
     }
 
     /**
@@ -76,6 +93,11 @@ final class ObjectType
                     'vm_count', 'uptime_seconds',
                 ],
                 runPrefix: 'hosts',
+
+                // Uptime climbs by itself. Left in the comparison it marks
+                // every host as changed on every run, which turns the host
+                // journal into a clock and hides the changes worth seeing.
+                volatile: ['uptime_seconds'],
             ),
 
             new self(

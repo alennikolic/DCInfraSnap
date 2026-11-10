@@ -49,7 +49,7 @@ final class InventoryRepository
 
         foreach ($objects as $object) {
             $fields = self::normalize($type, $object['fields']);
-            $hash   = self::hash($fields);
+            $hash   = self::hash($type, $fields);
             $moref  = $object['moref'];
 
             $current = $existing[$moref] ?? null;
@@ -61,7 +61,10 @@ final class InventoryRepository
             }
 
             if (hash_equals((string) $current['payload_hash'], $hash)) {
-                $this->touch($type, (int) $current['id'], $runId);
+                // Nothing worth journalling changed, but a volatile column
+                // may still have moved, so it is written here too — the
+                // stored value stays current without producing an entry.
+                $this->touch($type, (int) $current['id'], $runId, $fields);
                 continue;
             }
 
@@ -165,17 +168,29 @@ final class InventoryRepository
     }
 
     /**
-     * Nothing changed: the object was simply seen again.
+     * Nothing worth recording changed: the object was simply seen again.
+     *
+     * Volatile columns are refreshed all the same, so a counter such as
+     * uptime does not sit frozen at whatever it read the last time
+     * something real changed.
+     *
+     * @param array<string, scalar|null> $fields
      */
-    private function touch(ObjectType $type, int $id, int $runId): void
+    private function touch(ObjectType $type, int $id, int $runId, array $fields = []): void
     {
+        $assignments = ['last_seen = UTC_TIMESTAMP()', 'last_run_id = :run'];
+        $params      = ['id' => $id, 'run' => $runId];
+
+        foreach ($type->volatile as $column) {
+            $assignments[]    = $column . ' = :' . $column;
+            $params[$column] = $fields[$column] ?? null;
+        }
+
         $stmt = $this->pdo->prepare(
-            'UPDATE ' . $type->table . '
-                SET last_seen = UTC_TIMESTAMP(), last_run_id = :run
-              WHERE id = :id'
+            'UPDATE ' . $type->table . ' SET ' . implode(', ', $assignments) . ' WHERE id = :id'
         );
 
-        $stmt->execute(['id' => $id, 'run' => $runId]);
+        $stmt->execute($params);
     }
 
     /**
@@ -190,7 +205,7 @@ final class InventoryRepository
         $old = [];
         $new = [];
 
-        foreach ($type->columns as $column) {
+        foreach ($type->comparedColumns() as $column) {
             $before = $current[$column] ?? null;
             $after  = $fields[$column] ?? null;
 
@@ -253,9 +268,15 @@ final class InventoryRepository
         return $out;
     }
 
-    private static function hash(array $fields): string
+    private static function hash(ObjectType $type, array $fields): string
     {
-        return hash('sha256', json_encode($fields, JSON_UNESCAPED_UNICODE) ?: '');
+        $compared = [];
+
+        foreach ($type->comparedColumns() as $column) {
+            $compared[$column] = $fields[$column] ?? null;
+        }
+
+        return hash('sha256', json_encode($compared, JSON_UNESCAPED_UNICODE) ?: '');
     }
 
     /**
