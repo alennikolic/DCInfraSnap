@@ -394,6 +394,246 @@ final class InventoryQuery
     }
 
     // =================================================================
+    // Fibre Channel
+    // =================================================================
+
+    /**
+     * Every collected switch, with the figures a reader wants at a glance.
+     *
+     * The counts are subqueries rather than stored columns: a port count on
+     * the switch row would have to be kept in step with the port rows, and
+     * the two would eventually disagree.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fcSwitches(): array
+    {
+        return $this->pdo->query(
+            'SELECT s.*,
+                    i.name AS integration_name,
+                    (SELECT COUNT(*) FROM fc_port p
+                      WHERE p.integration_id = s.integration_id
+                        AND p.port_type IS NOT NULL)        AS port_online_count,
+                    (SELECT COUNT(*) FROM fc_device d
+                      WHERE d.integration_id = s.integration_id) AS device_count,
+                    (SELECT COUNT(*) FROM fc_isl l
+                      WHERE l.integration_id = s.integration_id) AS isl_count,
+                    (SELECT COUNT(*) FROM fc_zone_object z
+                      WHERE z.integration_id = s.integration_id
+                        AND z.section = \'defined\' AND z.kind = \'zone\') AS zone_count,
+                    (SELECT COUNT(*) FROM fc_zone_object z
+                      WHERE z.integration_id = s.integration_id
+                        AND z.section = \'defined\' AND z.kind = \'alias\') AS alias_count
+               FROM fc_switch s
+               JOIN integration i ON i.id = s.integration_id
+              ORDER BY s.name'
+        )->fetchAll();
+    }
+
+    public function fcSwitch(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT s.*, i.name AS integration_name, i.hostname
+               FROM fc_switch s
+               JOIN integration i ON i.id = s.integration_id
+              WHERE s.id = :id'
+        );
+        $stmt->execute(['id' => $id]);
+
+        $row = $stmt->fetch();
+
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * The other switches in this switch's fabric.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fcFabricMembers(int $integrationId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM fc_fabric_member
+              WHERE integration_id = :id
+              ORDER BY domain_id'
+        );
+        $stmt->execute(['id' => $integrationId]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Every port, with what the name server knows about whatever is attached.
+     *
+     * The join is on WWPN: switchshow says a port has a device, nsshow says
+     * what that device is, and the port page is where both are wanted.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fcPorts(int $integrationId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT p.*,
+                    d.node_symb, d.port_symb, d.device_type, d.fc4_types, d.wwnn
+               FROM fc_port p
+               LEFT JOIN fc_device d
+                      ON d.integration_id = p.integration_id
+                     AND d.wwpn = p.attached_wwpn
+              WHERE p.integration_id = :id
+              ORDER BY p.port_index'
+        );
+        $stmt->execute(['id' => $integrationId]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Devices logged in to the fabric through this switch.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fcDevices(int $integrationId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT d.*, p.port_name
+               FROM fc_device d
+               LEFT JOIN fc_port p
+                      ON p.integration_id = d.integration_id
+                     AND p.port_index = d.port_index
+              WHERE d.integration_id = :id
+              ORDER BY d.port_index, d.wwpn'
+        );
+        $stmt->execute(['id' => $integrationId]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function fcIsls(int $integrationId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM fc_isl WHERE integration_id = :id ORDER BY local_port'
+        );
+        $stmt->execute(['id' => $integrationId]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Zoning objects with their members, for one section.
+     *
+     * Two queries rather than a join with GROUP_CONCAT: a zone can hold many
+     * members, GROUP_CONCAT truncates silently at group_concat_max_len, and
+     * a zoning page that quietly drops members is worse than no page.
+     *
+     * @param string               $section 'defined' or 'effective'
+     * @param array<string, mixed> $filters kind, search
+     *
+     * @return list<array<string, mixed>> each with a 'members' list
+     */
+    public function fcZoning(string $section, array $filters = []): array
+    {
+        $section = $section === 'effective' ? 'effective' : 'defined';
+
+        $where  = ['z.section = :section'];
+        $params = ['section' => $section];
+
+        $kind = (string) ($filters['kind'] ?? '');
+
+        if (in_array($kind, ['cfg', 'zone', 'alias'], true)) {
+            $where[]        = 'z.kind = :kind';
+            $params['kind'] = $kind;
+        }
+
+        $search = trim((string) ($filters['search'] ?? ''));
+
+        if ($search !== '') {
+            // The object's own name, or the name of anything in it: looking
+            // up a WWPN to find its zones is the main reason to search here.
+            $term = '%' . self::escapeLike($search) . '%';
+
+            $where[] = "(z.name LIKE :name ESCAPE '!' OR EXISTS (
+                            SELECT 1 FROM fc_zone_member m
+                             WHERE m.integration_id = z.integration_id
+                               AND m.section = z.section
+                               AND m.kind = z.kind
+                               AND m.object_name = z.name
+                               AND m.member_name LIKE :member ESCAPE '!'
+                        ))";
+
+            // Two placeholders for one value: with native prepares a name
+            // cannot be reused within a statement.
+            $params['name']   = $term;
+            $params['member'] = $term;
+        }
+
+        $stmt = $this->pdo->prepare(
+            'SELECT z.*, i.name AS integration_name, s.name AS switch_name
+               FROM fc_zone_object z
+               JOIN integration i ON i.id = z.integration_id
+               LEFT JOIN fc_switch s ON s.integration_id = z.integration_id
+              WHERE ' . implode(' AND ', $where) . '
+              ORDER BY i.name, FIELD(z.kind, \'cfg\', \'zone\', \'alias\'), z.name'
+        );
+        $stmt->execute($params);
+
+        $objects = $stmt->fetchAll();
+
+        if ($objects === []) {
+            return [];
+        }
+
+        // Members for the whole page in one query, keyed to their object.
+        $members = $this->pdo->prepare(
+            'SELECT integration_id, kind, object_name, member_name, member_kind
+               FROM fc_zone_member
+              WHERE section = :section
+              ORDER BY sort_order'
+        );
+        $members->execute(['section' => $section]);
+
+        $byObject = [];
+
+        while (($row = $members->fetch()) !== false) {
+            $key              = $row['integration_id'] . '|' . $row['kind'] . '|' . $row['object_name'];
+            $byObject[$key][] = $row;
+        }
+
+        foreach ($objects as $index => $object) {
+            $key = $object['integration_id'] . '|' . $object['kind'] . '|' . $object['name'];
+
+            $objects[$index]['members'] = $byObject[$key] ?? [];
+        }
+
+        return $objects;
+    }
+
+    /**
+     * Which zones and aliases a WWPN belongs to.
+     *
+     * Looked up by member name across every switch, which is what makes this
+     * worth storing per membership: the same WWPN appears in the zoning of
+     * both fabrics, and this finds all of it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fcZonesOfMember(string $memberName): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT m.*, i.name AS integration_name
+               FROM fc_zone_member m
+               JOIN integration i ON i.id = m.integration_id
+              WHERE m.member_name = :member
+              ORDER BY i.name, m.section, m.kind, m.object_name'
+        );
+        $stmt->execute(['member' => $memberName]);
+
+        return $stmt->fetchAll();
+    }
+
+    // =================================================================
     // The change journal
     // =================================================================
 
