@@ -17,6 +17,10 @@ use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
 use DcInfraSnap\Inventory\ObjectType;
+use DcInfraSnap\Project\ProjectRepository;
+use DcInfraSnap\Report\HtmlWriter;
+use DcInfraSnap\Report\ReportBuilder;
+use DcInfraSnap\Report\ReportQuery;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
 use DcInfraSnap\Source\VCenter\ClientFactory;
@@ -84,6 +88,8 @@ $nav = [
     ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
     ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
     ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
+    ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
+    ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
     ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
     ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
 ];
@@ -205,6 +211,18 @@ if ($path === '/') {
 } elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
+} elseif ($path === '/projects') {
+    $route = 'projects.index';
+} elseif ($path === '/projects/add') {
+    $route = 'projects.add';
+} elseif (preg_match('#^/projects/(\d+)/(edit|sources|delete)$#', $path, $m) === 1) {
+    $route = 'projects.' . $m[2];
+    $id    = (int) $m[1];
+} elseif ($path === '/reports') {
+    // One address for the form and for generating from it. A POST that goes
+    // wrong therefore renders the form again with the message on it, at the
+    // address the person is already looking at.
+    $route = 'reports.index';
 } elseif ($path === '/vms/export') {
     $route = 'vms.export';
 } elseif (preg_match('#^/(vms|hosts)/(\d+)$#', $path, $m) === 1) {
@@ -244,7 +262,14 @@ if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.
 // Every POST carries the session token.
 if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
     Flash::error($translator->t('error.csrf'));
-    $redirect($path === '/integrations/add' ? '/integrations' : '/integrations');
+
+    // Back to the page the form belongs to, so the message is read where the
+    // work was happening rather than on a page the person did not ask for.
+    $redirect(match (true) {
+        str_starts_with($route, 'projects.') => '/projects',
+        str_starts_with($route, 'reports.')  => '/reports',
+        default                              => '/integrations',
+    });
 }
 
 // -----------------------------------------------------------------------
@@ -510,6 +535,312 @@ if ($route === 'database.show') {
 }
 
 // =======================================================================
+// Projects
+//
+// A project is a grouping of sources and nothing more. No credential is
+// involved, so this whole block sits above the point where the encryption
+// key is needed: a broken SECRET_KEY stops collection, not the question of
+// which sources belong together.
+// =======================================================================
+$projectRepo = new ProjectRepository($pdo);
+
+if ($route === 'projects.index') {
+    $respond($view->render('projects/index', [
+        'projects'    => $projectRepo->all(),
+        'sourceNames' => $projectRepo->sourceNamesByProject(),
+    ]));
+}
+
+/**
+ * Read and check the project form.
+ *
+ * Only the name is required. The other two are stored as NULL when left
+ * empty rather than as an empty string, so "not given" has one
+ * representation instead of two.
+ *
+ * @return array{values: array<string, string>, errors: list<string>}
+ */
+$readProjectForm = static function () use ($translator): array {
+    $values = [
+        'name'        => trim((string) ($_POST['name'] ?? '')),
+        'client'      => trim((string) ($_POST['client'] ?? '')),
+        'description' => trim((string) ($_POST['description'] ?? '')),
+    ];
+
+    $errors = [];
+
+    if ($values['name'] === '') {
+        $errors[] = $translator->t('projects.error_name');
+    }
+
+    return ['values' => $values, 'errors' => $errors];
+};
+
+// --- Add ---------------------------------------------------------------
+if ($route === 'projects.add') {
+    $values = [];
+    $errors = [];
+
+    if ($method === 'POST') {
+        ['values' => $values, 'errors' => $errors] = $readProjectForm();
+
+        if ($errors === []) {
+            try {
+                $projectRepo->create(
+                    name: $values['name'],
+                    client: $values['client'] === '' ? null : $values['client'],
+                    description: $values['description'] === '' ? null : $values['description'],
+                );
+
+                Flash::success($translator->t('projects.added', ['name' => $values['name']]));
+                Flash::info($translator->t('projects.added_hint'));
+
+                $redirect('/projects');
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+            }
+        }
+    }
+
+    $respond($view->render('projects/form', [
+        'project' => null,
+        'values'  => $values,
+        'errors'  => $errors,
+    ]));
+}
+
+// --- Everything else about one project ---------------------------------
+//
+// Scoped to this block on purpose: the source routes below look up an
+// integration by the same $id, and a project id is not an integration id.
+if (str_starts_with($route, 'projects.')) {
+    $project = $projectRepo->find((int) $id);
+
+    if ($project === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    // --- Edit ----------------------------------------------------------
+    if ($route === 'projects.edit') {
+        $values = [
+            'name'        => $project->name,
+            'client'      => $project->client ?? '',
+            'description' => $project->description ?? '',
+        ];
+
+        $errors = [];
+
+        if ($method === 'POST') {
+            ['values' => $values, 'errors' => $errors] = $readProjectForm();
+
+            if ($errors === []) {
+                try {
+                    $projectRepo->update(
+                        id: $project->id,
+                        name: $values['name'],
+                        client: $values['client'] === '' ? null : $values['client'],
+                        description: $values['description'] === '' ? null : $values['description'],
+                    );
+
+                    Flash::success($translator->t('projects.saved'));
+                    $redirect('/projects');
+                } catch (Throwable $e) {
+                    $errors[] = $e->getMessage();
+                }
+            }
+        }
+
+        $respond($view->render('projects/form', [
+            'project' => $project,
+            'values'  => $values,
+            'errors'  => $errors,
+        ]));
+    }
+
+    // --- Which sources it covers ---------------------------------------
+    //
+    // The form posts the whole set, so what is ticked when it is saved is
+    // what the project consists of afterwards.
+    if ($route === 'projects.sources') {
+        if ($method === 'POST') {
+            $posted = $_POST['sources'] ?? [];
+            $posted = is_array($posted) ? $posted : [];
+
+            try {
+                $count = $projectRepo->setSources(
+                    $project->id,
+                    array_map('intval', array_values($posted))
+                );
+
+                Flash::success($translator->t('projects.sources_saved', [
+                    'name'  => $project->name,
+                    'count' => $count,
+                ]));
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
+            }
+
+            $redirect('/projects');
+        }
+
+        $respond($view->render('projects/sources', [
+            'project'  => $project,
+            'sources'  => $projectRepo->selectableSources(),
+            'selected' => $projectRepo->sourceIds($project->id),
+        ]));
+    }
+
+    // --- Delete --------------------------------------------------------
+    if ($route === 'projects.delete') {
+        if ($method === 'POST') {
+            try {
+                $projectRepo->delete($project->id);
+                Flash::success($translator->t('projects.deleted', ['name' => $project->name]));
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
+            }
+
+            $redirect('/projects');
+        }
+
+        $respond($view->render('projects/delete', [
+            'project'     => $project,
+            'sourceNames' => array_map(
+                static fn (array $source): string => (string) $source['name'],
+                $projectRepo->sources($project->id)
+            ),
+        ]));
+    }
+}
+
+// =======================================================================
+// Reports
+//
+// Reading and writing a document, no credentials involved, so this sits
+// above the encryption key as well.
+//
+// GET renders the form; POST generates and streams the file. A POST that
+// fails validation falls through to the same render with the messages on it,
+// which is why there is no redirect in between: the ticked boxes survive.
+// =======================================================================
+if ($route === 'reports.index') {
+    $errors = [];
+    $values = ['scope' => 'project', 'project' => ''];
+
+    $selectedSources = [];
+
+    // Everything on by default. The boxes are there to leave a section out,
+    // and the first report somebody generates should be the complete one.
+    $selectedSections = ReportBuilder::allSections();
+
+    if ($method === 'POST') {
+        $values = [
+            'scope'   => ($_POST['scope'] ?? 'project') === 'sources' ? 'sources' : 'project',
+            'project' => trim((string) ($_POST['project'] ?? '')),
+        ];
+
+        $postedSources = is_array($_POST['sources'] ?? null)
+            ? array_values(array_unique(array_map('intval', $_POST['sources'])))
+            : [];
+
+        // Only section keys this build knows. A posted name that is not one
+        // of them is dropped rather than carried into the builder.
+        $postedSections = is_array($_POST['sections'] ?? null)
+            ? array_values(array_intersect(
+                array_map('strval', $_POST['sections']),
+                ReportBuilder::allSections()
+            ))
+            : [];
+
+        $selectedSources  = $postedSources;
+        $selectedSections = $postedSections;
+
+        // The format rides on the submit button. Only HTML exists in this
+        // step; anything else is refused rather than quietly treated as HTML.
+        $format = (string) ($_POST['format'] ?? 'html');
+
+        if ($format !== 'html') {
+            $errors[] = $translator->t('reports.error_format');
+        }
+
+        $project    = null;
+        $reportIds  = [];
+
+        if ($values['scope'] === 'sources') {
+            $reportIds = $postedSources;
+
+            if ($reportIds === []) {
+                $errors[] = $translator->t('reports.error_no_sources');
+            }
+        } else {
+            $project = $values['project'] === '' ? null : $projectRepo->find((int) $values['project']);
+
+            if ($project === null) {
+                $errors[] = $translator->t('reports.error_no_project');
+            } else {
+                $reportIds = $projectRepo->sourceIds($project->id);
+
+                if ($reportIds === []) {
+                    $errors[] = $translator->t('reports.error_project_empty', ['name' => $project->name]);
+                }
+            }
+        }
+
+        if ($postedSections === []) {
+            $errors[] = $translator->t('reports.error_no_sections');
+        }
+
+        if ($errors === []) {
+            $document = (new ReportBuilder(new ReportQuery($pdo), $translator))
+                ->build($reportIds, $postedSections, $project);
+
+            // No chapters means the chosen sources have never been collected
+            // from. Generating the title page of an empty document would look
+            // like a bug in the report rather than a missing collection.
+            if ($document->chapters === []) {
+                $errors[] = $translator->t('reports.error_nothing_collected');
+            } else {
+                $writer = new HtmlWriter();
+
+                // Any buffer in front of this would hold the whole document
+                // in memory for no reason.
+                while (ob_get_level() > 0) {
+                    ob_end_clean();
+                }
+
+                // Inline rather than an attachment: the browser is also the
+                // PDF writer here, so the document opens in a tab where it
+                // can be read and printed straight away. Ctrl+S still saves
+                // it under the name below.
+                header('Content-Type: ' . $writer->contentType());
+                header(
+                    'Content-Disposition: inline; filename="'
+                    . $document->filename() . '.' . $writer->extension() . '"'
+                );
+                header('Cache-Control: no-store');
+
+                echo $writer->write($document);
+
+                exit;
+            }
+        }
+    }
+
+    $respond($view->render('reports/index', [
+        'projects'            => $projectRepo->all(),
+        'projectSourceCounts' => array_map('count', $projectRepo->sourceNamesByProject()),
+        'sources'             => $projectRepo->selectableSources(),
+        'values'              => $values,
+        'selectedSources'     => $selectedSources,
+        'selectedSections'    => $selectedSections,
+        'errors'              => $errors,
+    ]));
+}
+
+// =======================================================================
 // Sources
 //
 // Everything below needs the encryption key. A missing or malformed
@@ -599,6 +930,11 @@ $readForm = static function (bool $requirePassword) use ($translator): array {
 if ($route === 'integrations.index') {
     $respond($view->render('integrations/index', [
         'integrations' => $repo->all(),
+
+        // Which projects each source belongs to. One query for the page, and
+        // the other direction of the same table the Projects page reads — a
+        // source appearing under two projects is visible from here.
+        'projectNames' => $projectRepo->projectNamesBySource(),
     ]));
 }
 

@@ -10,6 +10,9 @@
 /** @var callable $t */
 /** @var string $csrfToken */
 /** @var list<\DcInfraSnap\Integration\Integration> $integrations */
+/** @var array<int, list<string>> $projectNames */
+
+$projectNames ??= [];
 
 $state = static function (?bool $ok) use ($e, $t): string {
     if ($ok === null) {
@@ -56,6 +59,7 @@ $state = static function (?bool $ok) use ($e, $t): string {
                     <th><?= $e($t('integrations.username')) ?></th>
                     <th><?= $e($t('integrations.version')) ?></th>
                     <th><?= $e($t('integrations.last_test')) ?></th>
+                    <th><?= $e($t('nav.projects')) ?></th>
                     <th><?= $e($t('common.actions')) ?></th>
                 </tr>
             </thead>
@@ -92,6 +96,16 @@ $state = static function (?bool $ok) use ($e, $t): string {
                         <?php if ($i->lastTestOk === false && $i->lastTestMessage !== null): ?>
                             <div class="sub sub-error"><?= $e($i->lastTestMessage) ?></div>
                         <?php endif; ?>
+                    </td>
+
+                    <!-- A source can belong to several projects, so this is a
+                         list and not a single name. Empty is a normal state:
+                         a source needs no project to be collected. -->
+                    <td>
+                        <?php $inProjects = $projectNames[$i->id] ?? []; ?>
+                        <?= $inProjects === []
+                            ? '<span class="muted">—</span>'
+                            : $e(implode(', ', $inProjects)) ?>
                     </td>
 
                     <td class="actions">
