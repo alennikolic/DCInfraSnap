@@ -512,4 +512,9 @@ return [
     'report.no_isls'                  => 'Keine Inter-Switch-Links.',
     'report.zoning_note'              => 'Aufgeführt ist die definierte Konfiguration: die Zonen, wie sie geschrieben wurden, mit den Alias-Namen, auf die sie verweisen. Die Alias-Tabelle löst diese Namen zu WWPNs auf.',
 
+    // --- Word -------------------------------------------------------------
+    'reports.generate_docx' => 'Word erzeugen',
+    'reports.docx_note'     => 'Die Word-Datei hat die Kapitel als echte Überschriften, sodass sie im Navigationsbereich erscheinen, und ein Inhaltsverzeichnis, das Word mit Seitenzahlen füllt. Word fragt beim Öffnen, ob es aktualisiert werden soll: antworten Sie mit Ja.',
+    'report.contents_hint'  => 'Aktualisieren Sie dieses Feld in Word, um das Inhaltsverzeichnis zu füllen.',
+
 ];

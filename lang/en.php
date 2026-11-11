@@ -505,4 +505,9 @@ return [
     'report.no_isls'                  => 'No inter-switch links.',
     'report.zoning_note'              => 'The defined configuration is listed: the zones as they were written, with the alias names they refer to. The alias table resolves those names to WWPNs.',
 
+    // --- Word -------------------------------------------------------------
+    'reports.generate_docx' => 'Generate Word',
+    'reports.docx_note'     => 'The Word file has the chapters as real headings, so they appear in the navigation pane, and a table of contents Word fills in with page numbers. Word asks to update it when the document opens: answer yes.',
+    'report.contents_hint'  => 'Update this field in Word to fill in the contents.',
+
 ];

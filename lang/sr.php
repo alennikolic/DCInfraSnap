@@ -510,4 +510,9 @@ return [
     'report.no_isls'                  => 'Nema veza između svičeva.',
     'report.zoning_note'              => 'Navedena je definisana konfiguracija: zone kako su napisane, sa imenima alias-a na koje pokazuju. Tabela alias-a razrešava ta imena u WWPN-ove.',
 
+    // --- Word -------------------------------------------------------------
+    'reports.generate_docx' => 'Napravi Word',
+    'reports.docx_note'     => 'Word fajl ima poglavlja kao prave naslove, pa se vide u navigation pane-u, i sadržaj koji Word popunjava brojevima strana. Word pri otvaranju pita da ga osveži: odgovorite sa da.',
+    'report.contents_hint'  => 'Osvežite ovo polje u Wordu da se sadržaj popuni.',
+
 ];

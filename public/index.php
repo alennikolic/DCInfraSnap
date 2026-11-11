@@ -18,6 +18,7 @@ use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
 use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Project\ProjectRepository;
+use DcInfraSnap\Report\DocxWriter;
 use DcInfraSnap\Report\HtmlWriter;
 use DcInfraSnap\Report\ReportBuilder;
 use DcInfraSnap\Report\ReportQuery;
@@ -758,11 +759,15 @@ if ($route === 'reports.index') {
         $selectedSources  = $postedSources;
         $selectedSections = $postedSections;
 
-        // The format rides on the submit button. Only HTML exists in this
-        // step; anything else is refused rather than quietly treated as HTML.
-        $format = (string) ($_POST['format'] ?? 'html');
+        // The format rides on the submit button. Anything that is not one of
+        // these is refused rather than quietly treated as HTML.
+        $writer = match ((string) ($_POST['format'] ?? '')) {
+            'html'  => new HtmlWriter(),
+            'docx'  => new DocxWriter(),
+            default => null,
+        };
 
-        if ($format !== 'html') {
+        if ($writer === null) {
             $errors[] = $translator->t('reports.error_format');
         }
 
@@ -803,26 +808,26 @@ if ($route === 'reports.index') {
             if ($document->chapters === []) {
                 $errors[] = $translator->t('reports.error_nothing_collected');
             } else {
-                $writer = new HtmlWriter();
+                $file = $writer->write($document);
 
-                // Any buffer in front of this would hold the whole document
-                // in memory for no reason.
+                // Any buffer in front of this would hold the document twice
+                // over for no reason.
                 while (ob_get_level() > 0) {
                     ob_end_clean();
                 }
 
-                // Inline rather than an attachment: the browser is also the
-                // PDF writer here, so the document opens in a tab where it
-                // can be read and printed straight away. Ctrl+S still saves
-                // it under the name below.
+                // HTML is shown in a tab, because the browser is also where
+                // it gets printed to PDF; a Word file can only be
+                // downloaded. Ctrl+S saves the HTML under the same name.
                 header('Content-Type: ' . $writer->contentType());
                 header(
-                    'Content-Disposition: inline; filename="'
-                    . $document->filename() . '.' . $writer->extension() . '"'
+                    'Content-Disposition: ' . ($writer->isDownload() ? 'attachment' : 'inline')
+                    . '; filename="' . $document->filename() . '.' . $writer->extension() . '"'
                 );
+                header('Content-Length: ' . strlen($file));
                 header('Cache-Control: no-store');
 
-                echo $writer->write($document);
+                echo $file;
 
                 exit;
             }
