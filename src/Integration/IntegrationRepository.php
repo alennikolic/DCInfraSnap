@@ -312,7 +312,16 @@ class IntegrationRepository
         $this->pdo->beginTransaction();
 
         try {
-            // Journals first: they point at both the inventory row and the
+            // Project membership first. It is only a grouping, so it carries
+            // no data worth reporting on the confirmation page — but the
+            // foreign key is RESTRICT like every other one here, so leaving
+            // it in place would make the source refuse to go.
+            $stmt = $this->pdo->prepare(
+                'DELETE FROM project_integration WHERE integration_id = :id'
+            );
+            $stmt->execute(['id' => $id]);
+
+            // Journals next: they point at both the inventory row and the
             // run. Every table comes from ObjectType, so a new object type
             // is cleaned up here without anyone remembering to add it — the
             // hand-written version of this list had already fallen a type

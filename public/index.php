@@ -17,6 +17,7 @@ use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
 use DcInfraSnap\Inventory\ObjectType;
+use DcInfraSnap\Project\ProjectRepository;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
 use DcInfraSnap\Source\VCenter\ClientFactory;
@@ -84,6 +85,7 @@ $nav = [
     ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
     ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
     ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
+    ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
     ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
     ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
 ];
@@ -205,6 +207,13 @@ if ($path === '/') {
 } elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
+} elseif ($path === '/projects') {
+    $route = 'projects.index';
+} elseif ($path === '/projects/add') {
+    $route = 'projects.add';
+} elseif (preg_match('#^/projects/(\d+)/(edit|sources|delete)$#', $path, $m) === 1) {
+    $route = 'projects.' . $m[2];
+    $id    = (int) $m[1];
 } elseif ($path === '/vms/export') {
     $route = 'vms.export';
 } elseif (preg_match('#^/(vms|hosts)/(\d+)$#', $path, $m) === 1) {
@@ -244,7 +253,10 @@ if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.
 // Every POST carries the session token.
 if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
     Flash::error($translator->t('error.csrf'));
-    $redirect($path === '/integrations/add' ? '/integrations' : '/integrations');
+
+    // Back to the list the form belongs to, so the message is read where the
+    // work was happening rather than on a page the person did not ask for.
+    $redirect(str_starts_with($route, 'projects.') ? '/projects' : '/integrations');
 }
 
 // -----------------------------------------------------------------------
@@ -510,6 +522,188 @@ if ($route === 'database.show') {
 }
 
 // =======================================================================
+// Projects
+//
+// A project is a grouping of sources and nothing more. No credential is
+// involved, so this whole block sits above the point where the encryption
+// key is needed: a broken SECRET_KEY stops collection, not the question of
+// which sources belong together.
+// =======================================================================
+$projectRepo = new ProjectRepository($pdo);
+
+if ($route === 'projects.index') {
+    $respond($view->render('projects/index', [
+        'projects'    => $projectRepo->all(),
+        'sourceNames' => $projectRepo->sourceNamesByProject(),
+    ]));
+}
+
+/**
+ * Read and check the project form.
+ *
+ * Only the name is required. The other two are stored as NULL when left
+ * empty rather than as an empty string, so "not given" has one
+ * representation instead of two.
+ *
+ * @return array{values: array<string, string>, errors: list<string>}
+ */
+$readProjectForm = static function () use ($translator): array {
+    $values = [
+        'name'        => trim((string) ($_POST['name'] ?? '')),
+        'client'      => trim((string) ($_POST['client'] ?? '')),
+        'description' => trim((string) ($_POST['description'] ?? '')),
+    ];
+
+    $errors = [];
+
+    if ($values['name'] === '') {
+        $errors[] = $translator->t('projects.error_name');
+    }
+
+    return ['values' => $values, 'errors' => $errors];
+};
+
+// --- Add ---------------------------------------------------------------
+if ($route === 'projects.add') {
+    $values = [];
+    $errors = [];
+
+    if ($method === 'POST') {
+        ['values' => $values, 'errors' => $errors] = $readProjectForm();
+
+        if ($errors === []) {
+            try {
+                $projectRepo->create(
+                    name: $values['name'],
+                    client: $values['client'] === '' ? null : $values['client'],
+                    description: $values['description'] === '' ? null : $values['description'],
+                );
+
+                Flash::success($translator->t('projects.added', ['name' => $values['name']]));
+                Flash::info($translator->t('projects.added_hint'));
+
+                $redirect('/projects');
+            } catch (Throwable $e) {
+                $errors[] = $e->getMessage();
+            }
+        }
+    }
+
+    $respond($view->render('projects/form', [
+        'project' => null,
+        'values'  => $values,
+        'errors'  => $errors,
+    ]));
+}
+
+// --- Everything else about one project ---------------------------------
+//
+// Scoped to this block on purpose: the source routes below look up an
+// integration by the same $id, and a project id is not an integration id.
+if (str_starts_with($route, 'projects.')) {
+    $project = $projectRepo->find((int) $id);
+
+    if ($project === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    // --- Edit ----------------------------------------------------------
+    if ($route === 'projects.edit') {
+        $values = [
+            'name'        => $project->name,
+            'client'      => $project->client ?? '',
+            'description' => $project->description ?? '',
+        ];
+
+        $errors = [];
+
+        if ($method === 'POST') {
+            ['values' => $values, 'errors' => $errors] = $readProjectForm();
+
+            if ($errors === []) {
+                try {
+                    $projectRepo->update(
+                        id: $project->id,
+                        name: $values['name'],
+                        client: $values['client'] === '' ? null : $values['client'],
+                        description: $values['description'] === '' ? null : $values['description'],
+                    );
+
+                    Flash::success($translator->t('projects.saved'));
+                    $redirect('/projects');
+                } catch (Throwable $e) {
+                    $errors[] = $e->getMessage();
+                }
+            }
+        }
+
+        $respond($view->render('projects/form', [
+            'project' => $project,
+            'values'  => $values,
+            'errors'  => $errors,
+        ]));
+    }
+
+    // --- Which sources it covers ---------------------------------------
+    //
+    // The form posts the whole set, so what is ticked when it is saved is
+    // what the project consists of afterwards.
+    if ($route === 'projects.sources') {
+        if ($method === 'POST') {
+            $posted = $_POST['sources'] ?? [];
+            $posted = is_array($posted) ? $posted : [];
+
+            try {
+                $count = $projectRepo->setSources(
+                    $project->id,
+                    array_map('intval', array_values($posted))
+                );
+
+                Flash::success($translator->t('projects.sources_saved', [
+                    'name'  => $project->name,
+                    'count' => $count,
+                ]));
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
+            }
+
+            $redirect('/projects');
+        }
+
+        $respond($view->render('projects/sources', [
+            'project'  => $project,
+            'sources'  => $projectRepo->selectableSources(),
+            'selected' => $projectRepo->sourceIds($project->id),
+        ]));
+    }
+
+    // --- Delete --------------------------------------------------------
+    if ($route === 'projects.delete') {
+        if ($method === 'POST') {
+            try {
+                $projectRepo->delete($project->id);
+                Flash::success($translator->t('projects.deleted', ['name' => $project->name]));
+            } catch (Throwable $e) {
+                Flash::error($e->getMessage());
+            }
+
+            $redirect('/projects');
+        }
+
+        $respond($view->render('projects/delete', [
+            'project'     => $project,
+            'sourceNames' => array_map(
+                static fn (array $source): string => (string) $source['name'],
+                $projectRepo->sources($project->id)
+            ),
+        ]));
+    }
+}
+
+// =======================================================================
 // Sources
 //
 // Everything below needs the encryption key. A missing or malformed
@@ -599,6 +793,11 @@ $readForm = static function (bool $requirePassword) use ($translator): array {
 if ($route === 'integrations.index') {
     $respond($view->render('integrations/index', [
         'integrations' => $repo->all(),
+
+        // Which projects each source belongs to. One query for the page, and
+        // the other direction of the same table the Projects page reads — a
+        // source appearing under two projects is visible from here.
+        'projectNames' => $projectRepo->projectNamesBySource(),
     ]));
 }
 
