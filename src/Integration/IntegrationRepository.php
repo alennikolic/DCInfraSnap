@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace DcInfraSnap\Integration;
 
 use DcInfraSnap\Core\Secret;
+use DcInfraSnap\Inventory\ObjectType;
 use PDO;
 use RuntimeException;
 use SensitiveParameter;
@@ -104,7 +105,26 @@ class IntegrationRepository
     {
         $counts = [];
 
-        foreach (['vc_cluster', 'vc_host', 'vc_vm', 'vc_datastore', 'vc_license', 'discovery_run'] as $table) {
+        // Derived from ObjectType rather than listed here. The list used to
+        // be written out by hand and fell behind: vc_host_device was added
+        // and this was not, so the confirmation under-reported what was about
+        // to be deleted and the delete itself then failed on the foreign key.
+        foreach (self::inventoryTables() as $table) {
+            $stmt = $this->pdo->prepare(
+                'SELECT COUNT(*) FROM ' . $table . ' WHERE integration_id = :id'
+            );
+            $stmt->execute(['id' => $id]);
+
+            $count = (int) $stmt->fetchColumn();
+
+            // Only what is actually there, so a vCenter is not described in
+            // terms of empty FC tables and the other way round.
+            if ($count > 0) {
+                $counts[$table] = $count;
+            }
+        }
+
+        foreach (['raw_object', 'discovery_run'] as $table) {
             $stmt = $this->pdo->prepare(
                 'SELECT COUNT(*) FROM ' . $table . ' WHERE integration_id = :id'
             );
@@ -114,6 +134,22 @@ class IntegrationRepository
         }
 
         return $counts;
+    }
+
+    /**
+     * Every inventory table, in the order the types are declared.
+     *
+     * @return list<string>
+     */
+    private static function inventoryTables(): array
+    {
+        $tables = [];
+
+        foreach (ObjectType::all() as $type) {
+            $tables[] = $type->table;
+        }
+
+        return $tables;
     }
 
     // -----------------------------------------------------------------
@@ -276,38 +312,49 @@ class IntegrationRepository
         $this->pdo->beginTransaction();
 
         try {
-            // Journals first: they point at both the inventory row and the run.
-            foreach ([
-                'vc_cluster_change'   => 'vc_cluster',
-                'vc_host_change'      => 'vc_host',
-                'vc_vm_change'        => 'vc_vm',
-                'vc_datastore_change' => 'vc_datastore',
-                'vc_license_change'   => 'vc_license',
-            ] as $journal => $parent) {
-                $column = match ($parent) {
-                    'vc_cluster'   => 'cluster_id',
-                    'vc_host'      => 'host_id',
-                    'vc_vm'        => 'vm_id',
-                    'vc_datastore' => 'datastore_id',
-                    'vc_license'   => 'license_id',
-                };
-
+            // Journals first: they point at both the inventory row and the
+            // run. Every table comes from ObjectType, so a new object type
+            // is cleaned up here without anyone remembering to add it — the
+            // hand-written version of this list had already fallen a type
+            // behind, which left integration:delete failing on a foreign key
+            // for any vCenter whose host devices had been collected.
+            foreach (ObjectType::all() as $type) {
                 $stmt = $this->pdo->prepare(
-                    'DELETE FROM ' . $journal . '
-                      WHERE ' . $column . ' IN (
-                            SELECT id FROM ' . $parent . ' WHERE integration_id = :id
+                    'DELETE FROM ' . $type->changeTable . '
+                      WHERE ' . $type->changeKey . ' IN (
+                            SELECT id FROM ' . $type->table . ' WHERE integration_id = :id
                       )'
                 );
                 $stmt->execute(['id' => $id]);
             }
 
-            foreach (['vc_cluster', 'vc_host', 'vc_vm', 'vc_datastore', 'vc_license',
-                      'raw_object', 'discovery_run'] as $table) {
+            foreach (self::inventoryTables() as $table) {
                 $stmt = $this->pdo->prepare(
                     'DELETE FROM ' . $table . ' WHERE integration_id = :id'
                 );
                 $stmt->execute(['id' => $id]);
             }
+
+            $stmt = $this->pdo->prepare(
+                'DELETE FROM raw_object WHERE integration_id = :id'
+            );
+            $stmt->execute(['id' => $id]);
+
+            // The per-type outcome rows point at the run, so they go before
+            // it. ON DELETE RESTRICT throughout means this cannot be left to
+            // the database.
+            $stmt = $this->pdo->prepare(
+                'DELETE FROM discovery_run_type
+                  WHERE run_id IN (
+                        SELECT id FROM discovery_run WHERE integration_id = :id
+                  )'
+            );
+            $stmt->execute(['id' => $id]);
+
+            $stmt = $this->pdo->prepare(
+                'DELETE FROM discovery_run WHERE integration_id = :id'
+            );
+            $stmt->execute(['id' => $id]);
 
             $stmt = $this->pdo->prepare('DELETE FROM integration WHERE id = :id');
             $stmt->execute(['id' => $id]);

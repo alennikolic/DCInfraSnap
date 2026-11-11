@@ -13,10 +13,12 @@ declare(strict_types=1);
 use DcInfraSnap\Core\Database;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
+use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
 use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Run\RunRepository;
+use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
@@ -79,6 +81,8 @@ $nav = [
     ['path' => '/clusters',     'key' => 'nav.clusters',     'enabled' => true],
     ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => true],
     ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => true],
+    ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
+    ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
     ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
     ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
     ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
@@ -206,13 +210,17 @@ if ($path === '/') {
 } elseif (preg_match('#^/(vms|hosts)/(\d+)$#', $path, $m) === 1) {
     $route = $m[1] . '.show';
     $id    = (int) $m[2];
+} elseif (preg_match('#^/san/(\d+)$#', $path, $m) === 1) {
+    $route = 'san.show';
+    $id    = (int) $m[1];
 } elseif (preg_match('#^/runs/(\d+)/reset$#', $path, $m) === 1) {
     $route = 'runs.reset';
     $id    = (int) $m[1];
 } elseif (preg_match('#^/database/(\w+)$#', $path, $m) === 1) {
     $route = 'database.show';
     $table = $m[1];
-} elseif (in_array($path, ['/vms', '/hosts', '/clusters', '/datastores', '/licenses', '/runs', '/database'], true)) {
+} elseif (in_array($path, ['/vms', '/hosts', '/clusters', '/datastores', '/licenses',
+                           '/san', '/zoning', '/runs', '/database'], true)) {
     $route = ltrim($path, '/') . '.index';
 }
 
@@ -269,6 +277,18 @@ if ($route === 'overview') {
         'vms'          => (int) $pdo->query('SELECT COUNT(*) FROM vc_vm')->fetchColumn(),
         'datastores'   => (int) $pdo->query('SELECT COUNT(*) FROM vc_datastore')->fetchColumn(),
         'licenses'     => (int) $pdo->query('SELECT COUNT(*) FROM vc_license')->fetchColumn(),
+
+        // Fibre Channel. Zones are counted from the defined configuration
+        // only: the effective one holds the same zones again, and showing
+        // both would double every figure.
+        'switches'     => (int) $pdo->query('SELECT COUNT(*) FROM fc_switch')->fetchColumn(),
+        'fc_ports'     => (int) $pdo->query(
+            'SELECT COUNT(*) FROM fc_port WHERE port_type IS NOT NULL'
+        )->fetchColumn(),
+        'fc_devices'   => (int) $pdo->query('SELECT COUNT(*) FROM fc_device')->fetchColumn(),
+        'zones'        => (int) $pdo->query(
+            "SELECT COUNT(*) FROM fc_zone_object WHERE section = 'defined' AND kind = 'zone'"
+        )->fetchColumn(),
     ];
 
     $sources = $pdo->query(
@@ -387,10 +407,64 @@ if ($route === 'licenses.index') {
     $respond($view->render('licenses/index', ['rows' => $inventory->licenses()]));
 }
 
+// --- Fibre Channel ---------------------------------------------------
+if ($route === 'san.index') {
+    $respond($view->render('san/index', [
+        'rows'     => $inventory->fcSwitches(),
+        'lastRuns' => $inventory->lastSuccessfulRuns(),
+    ]));
+}
+
+if ($route === 'san.show') {
+    $switch = $inventory->fcSwitch((int) $id);
+
+    if ($switch === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $integrationId = (int) $switch['integration_id'];
+
+    $respond($view->render('san/show', [
+        'switch'  => $switch,
+        'members' => $inventory->fcFabricMembers($integrationId),
+        'ports'   => $inventory->fcPorts($integrationId),
+        'devices' => $inventory->fcDevices($integrationId),
+        'isls'    => $inventory->fcIsls($integrationId),
+        'changes' => $inventory->changes(ObjectType::get('fc_switch'), (int) $id),
+    ]));
+}
+
+if ($route === 'zoning.index') {
+    // Defaults to the defined configuration: that is the one somebody wrote
+    // and the one they will recognise.
+    $section = ($_GET['section'] ?? '') === 'effective' ? 'effective' : 'defined';
+    $kind    = (string) ($_GET['kind'] ?? '');
+    $search  = trim((string) ($_GET['q'] ?? ''));
+
+    $respond($view->render('zoning/index', [
+        'rows'    => $inventory->fcZoning($section, ['kind' => $kind, 'search' => $search]),
+        'section' => $section,
+        'kind'    => in_array($kind, ['cfg', 'zone', 'alias'], true) ? $kind : '',
+        'search'  => $search,
+    ]));
+}
+
 // --- Collection history ---------------------------------------------
 if ($route === 'runs.index') {
+    $runRepository = new RunRepository($pdo);
+    $recent        = $runRepository->recent(100);
+
+    // The per-type outcome for the whole page in one query, rather than one
+    // query per run.
     $respond($view->render('runs/index', [
-        'rows' => (new RunRepository($pdo))->recent(100),
+        'rows'     => $recent,
+        'runTypes' => $runRepository->typesFor(array_map(
+            static fn (array $run): int => (int) $run['id'],
+            $recent
+        )),
     ]));
 }
 
@@ -475,10 +549,17 @@ $requireIntegration = static function (?int $id) use ($repo, $view, $translator,
  * @return array{values: array<string, string>, errors: list<string>}
  */
 $readForm = static function (bool $requirePassword) use ($translator): array {
+    // The type decides the default port and which kind of peer verification
+    // is on offer, so it is read first. Anything unrecognised falls back to
+    // vCenter rather than reaching the database.
+    $type = (string) ($_POST['type'] ?? Integration::TYPE_VCENTER);
+    $type = isset(Integration::TYPES[$type]) ? $type : Integration::TYPE_VCENTER;
+
     $values = [
+        'type'        => $type,
         'name'        => trim((string) ($_POST['name'] ?? '')),
         'hostname'    => trim((string) ($_POST['hostname'] ?? '')),
-        'port'        => trim((string) ($_POST['port'] ?? '443')),
+        'port'        => trim((string) ($_POST['port'] ?? (string) Integration::defaultPort($type))),
         'username'    => trim((string) ($_POST['username'] ?? '')),
         'verify_peer' => isset($_POST['verify_peer']) ? '1' : '0',
     ];
@@ -523,7 +604,12 @@ if ($route === 'integrations.index') {
 
 // --- Add ---------------------------------------------------------------
 if ($route === 'integrations.add') {
-    $values = ['port' => '443'];
+    // A type can be preselected by the link that got here, so the two buttons
+    // on the Integrations page land on a form that is already right.
+    $wanted = (string) ($_GET['type'] ?? Integration::TYPE_VCENTER);
+    $wanted = isset(Integration::TYPES[$wanted]) ? $wanted : Integration::TYPE_VCENTER;
+
+    $values = ['type' => $wanted, 'port' => (string) Integration::defaultPort($wanted)];
     $errors = [];
 
     if ($method === 'POST') {
@@ -538,6 +624,7 @@ if ($route === 'integrations.add') {
                     password: (string) $_POST['password'],
                     port: (int) $values['port'],
                     verifyPeer: $values['verify_peer'] === '1',
+                    type: $values['type'],
                 );
 
                 Flash::success($translator->t('integrations.added', ['name' => $values['name']]));
@@ -632,10 +719,29 @@ if ($route === 'integrations.password') {
 
 // --- Test the connection -----------------------------------------------
 if ($route === 'integrations.test') {
-    $factory = new ClientFactory(timeout: 30);
-
     try {
-        $client = $factory->make($integration, $repo->password($integration->id));
+        // A switch is reached over SSH and a vCenter over HTTPS, so the test
+        // differs even though what gets recorded does not.
+        if ($integration->isBrocade()) {
+            $client = (new BrocadeClientFactory(timeout: 60))
+                ->make($integration, $repo->password($integration->id));
+
+            $result = $client->testConnection();
+
+            $message = $translator->t('integrations.test_ok_switch', [
+                'name'    => $result['name'] ?? '?',
+                'version' => $result['fos_version'] ?? '?',
+            ]);
+
+            $repo->recordTest($integration->id, true, $message, $result['fos_version']);
+            Flash::success($integration->name . ': ' . $message);
+
+            $redirect('/integrations');
+        }
+
+        $client = (new ClientFactory(timeout: 30))
+            ->make($integration, $repo->password($integration->id));
+
         $result = $client->testConnection();
 
         $message = $translator->t('integrations.test_ok_message', [

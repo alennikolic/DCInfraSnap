@@ -6,10 +6,17 @@
 // The per-type outcome is the reason this page is worth having: a run marked
 // "partial" is only useful if you can see WHICH type failed, because that
 // decides whether the data you were about to rely on is current.
+//
+// WHY THE TYPES ARE NOT COLUMNS. They were, one column per type, which worked
+// while every run collected the same six things. A switch run collects seven
+// entirely different ones, so a fixed set of columns would be half empty on
+// every row whichever source it came from. Each run now lists the types it
+// actually recorded, read from discovery_run_type.
 
 /** @var callable $e */
 /** @var callable $t */
 /** @var list<array<string,mixed>> $rows */
+/** @var array<int, list<array<string,mixed>>> $runTypes */
 /** @var string $csrfToken */
 
 use DcInfraSnap\Web\Format;
@@ -26,16 +33,28 @@ $badge = static function (string $status) use ($e, $t): string {
     return '<span class="badge ' . $class . '">' . $e($t('runs.status.' . $status)) . '</span>';
 };
 
-$cell = static function (array $row, string $prefix) use ($e): string {
-    $status = (string) $row[$prefix . '_status'];
+/**
+ * One type's outcome, as a small labelled figure.
+ *
+ * The label comes from the translations by type key, so a type added later
+ * appears here as soon as it has a name.
+ */
+$typeCell = static function (array $type) use ($e, $t): string {
+    $label = $e($t('type.' . $type['type_key']));
 
-    return match ($status) {
-        'ok'      => '<span class="data">' . $e(Format::number($row[$prefix . '_found'])) . '</span>'
-                     . ((int) $row[$prefix . '_changed'] > 0
-                        ? '<span class="delta">+' . $e($row[$prefix . '_changed']) . '</span>' : ''),
-        'failed'  => '<span class="badge badge-error">!</span>',
-        default   => '<span class="muted">—</span>',
-    };
+    if ((string) $type['status'] === 'failed') {
+        return '<span class="type-pill type-pill-failed" title="'
+            . $e((string) ($type['error_message'] ?? '')) . '">'
+            . $label . ' <span class="badge badge-error">!</span></span>';
+    }
+
+    $changed = (int) $type['changed'] > 0
+        ? '<span class="delta">+' . $e((string) $type['changed']) . '</span>'
+        : '';
+
+    return '<span class="type-pill">' . $label
+        . ' <span class="data">' . $e(Format::number($type['found'])) . '</span>'
+        . $changed . '</span>';
 };
 
 $duration = static function (array $row): string {
@@ -69,11 +88,7 @@ $duration = static function (array $row): string {
                     <th><?= $e($t('runs.run')) ?></th>
                     <th><?= $e($t('runs.source')) ?></th>
                     <th><?= $e($t('common.status')) ?></th>
-                    <th><?= $e($t('nav.clusters')) ?></th>
-                    <th><?= $e($t('nav.hosts')) ?></th>
-                    <th><?= $e($t('nav.vms')) ?></th>
-                    <th><?= $e($t('nav.datastores')) ?></th>
-                    <th><?= $e($t('nav.licenses')) ?></th>
+                    <th><?= $e($t('runs.collected')) ?></th>
                     <th><?= $e($t('runs.duration')) ?></th>
                     <th><?= $e($t('runs.calls')) ?></th>
                     <th><?= $e($t('runs.when')) ?></th>
@@ -81,6 +96,7 @@ $duration = static function (array $row): string {
             </thead>
             <tbody>
             <?php foreach ($rows as $row): ?>
+                <?php $types = $runTypes[(int) $row['id']] ?? []; ?>
                 <tr>
                     <td class="data">#<?= (int) $row['id'] ?></td>
                     <td><?= $e($row['integration_name']) ?></td>
@@ -93,18 +109,22 @@ $duration = static function (array $row): string {
                             </form>
                         <?php endif; ?>
                     </td>
-                    <td><?= $cell($row, 'clusters') ?></td>
-                    <td><?= $cell($row, 'hosts') ?></td>
-                    <td><?= $cell($row, 'vms') ?></td>
-                    <td><?= $cell($row, 'datastores') ?></td>
-                    <td><?= $cell($row, 'licenses') ?></td>
+                    <td class="type-list">
+                        <?php if ($types === []): ?>
+                            <span class="muted">—</span>
+                        <?php else: ?>
+                            <?php foreach ($types as $type): ?>
+                                <?= $typeCell($type) ?>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </td>
                     <td class="data"><?= $e($duration($row)) ?></td>
                     <td class="data"><?= $e(Format::number($row['api_calls'])) ?></td>
                     <td title="<?= $e((string) $row['queued_at']) ?> UTC"><?= $e(Format::ago($row['queued_at'])) ?></td>
                 </tr>
                 <?php if ($row['error_message'] !== null): ?>
                     <tr class="row-note">
-                        <td colspan="11" class="sub-error"><?= $e($row['error_message']) ?></td>
+                        <td colspan="7" class="sub-error"><?= $e($row['error_message']) ?></td>
                     </tr>
                 <?php endif; ?>
             <?php endforeach; ?>

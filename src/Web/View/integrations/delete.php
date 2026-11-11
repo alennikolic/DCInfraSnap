@@ -13,14 +13,20 @@
 /** @var \DcInfraSnap\Integration\Integration $integration */
 /** @var array<string, int> $counts */
 
-$labels = [
-    'vc_cluster'    => 'nav.clusters',
-    'vc_host'       => 'nav.hosts',
-    'vc_vm'         => 'nav.vms',
-    'vc_datastore'  => 'nav.datastores',
-    'vc_license'    => 'nav.licenses',
-    'discovery_run' => 'nav.runs',
-];
+use DcInfraSnap\Inventory\ObjectType;
+
+// Labels are derived from ObjectType rather than listed here. The list was
+// written out by hand and fell behind as types were added, so a source with
+// host devices or FC data was counted but never shown — which understated
+// what the confirmation was about to delete.
+$labels = [];
+
+foreach (ObjectType::all() as $key => $type) {
+    $labels[$type->table] = 'type.' . $key;
+}
+
+$labels['raw_object']    = 'type.raw_object';
+$labels['discovery_run'] = 'nav.runs';
 
 $total = array_sum($counts);
 ?>

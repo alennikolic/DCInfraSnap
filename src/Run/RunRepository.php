@@ -131,44 +131,101 @@ final class RunRepository
     /**
      * Record how one object type went.
      *
-     * The column names are built from the type's own prefix, which is why
-     * ObjectType carries one. They are not user input — they come from a
-     * fixed list in the code — but they are still checked against the
-     * schema, because a typo would otherwise write to a column that silently
-     * does not exist.
+     * Written as a row in discovery_run_type rather than as columns on the
+     * run. A run of a switch and a run of a vCenter produce entirely
+     * different sets of types, and there is no row shape that fits both
+     * without most of it being NULL either way.
+     *
+     * The absence of a row is what 'pending' used to mean: the type was never
+     * reached. So only an outcome is ever written here — ok or failed.
+     *
+     * Values are bound, never interpolated, which is the other reason to
+     * prefer this over the columns: the type name no longer reaches SQL as
+     * part of a column name.
      */
     public function recordType(
         int $runId,
-        string $prefix,
+        string $typeKey,
+        string $sourceType,
+        int $order,
         string $status,
         int $found = 0,
         int $changed = 0,
+        ?string $error = null,
     ): void {
-        $allowed = ['clusters', 'hosts', 'vms', 'datastores', 'licenses', 'host_devices'];
-
-        if (!in_array($prefix, $allowed, true)) {
-            throw new RuntimeException("Unknown object type prefix: {$prefix}");
-        }
-
-        if (!in_array($status, ['pending', 'ok', 'failed'], true)) {
+        if (!in_array($status, ['ok', 'failed'], true)) {
             throw new RuntimeException("Unknown status: {$status}");
         }
 
+        // ON DUPLICATE KEY, so that a type collected twice within one run —
+        // a retry, or a collector that was interrupted — replaces its own
+        // row instead of failing on uq_run_type.
         $stmt = $this->pdo->prepare(
-            'UPDATE discovery_run
-                SET ' . $prefix . '_status = :status,
-                    ' . $prefix . '_found = :found,
-                    ' . $prefix . '_changed = :changed,
-                    heartbeat_at = UTC_TIMESTAMP()
-              WHERE id = :id'
+            'INSERT INTO discovery_run_type
+                    (run_id, type_key, source_type, sort_order, status, found, changed,
+                     error_message, recorded_at)
+             VALUES (:run, :type, :source, :sort_order, :status, :found, :changed,
+                     :error, UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE
+                     source_type   = VALUES(source_type),
+                     sort_order    = VALUES(sort_order),
+                     status        = VALUES(status),
+                     found         = VALUES(found),
+                     changed       = VALUES(changed),
+                     error_message = VALUES(error_message),
+                     recorded_at   = VALUES(recorded_at)'
         );
 
         $stmt->execute([
-            'id'      => $runId,
-            'status'  => $status,
-            'found'   => $found,
-            'changed' => $changed,
+            'run'        => $runId,
+            'type'       => $typeKey,
+            'source'     => $sourceType,
+            'sort_order' => $order,
+            'status'     => $status,
+            'found'      => $found,
+            'changed'    => $changed,
+            'error'      => $error,
         ]);
+
+        // Progress is also a sign of life: a long collection must not look
+        // dead to releaseStale() while it is still working through its types.
+        $this->heartbeat($runId);
+    }
+
+    /**
+     * The per-type outcome of several runs at once, keyed by run id.
+     *
+     * One query for a page of runs rather than one per run. The Runs page
+     * renders whatever types come back, so a switch run showing seven FC
+     * types and a vCenter run showing six needs no special case.
+     *
+     * @param list<int> $runIds
+     *
+     * @return array<int, list<array<string, mixed>>>
+     */
+    public function typesFor(array $runIds): array
+    {
+        if ($runIds === []) {
+            return [];
+        }
+
+        // Built from integers cast here, not from anything a caller typed.
+        $ids = implode(',', array_map('intval', $runIds));
+
+        $rows = $this->pdo->query(
+            'SELECT run_id, type_key, source_type, sort_order, status, found, changed, error_message
+               FROM discovery_run_type
+              WHERE run_id IN (' . $ids . ')
+              ORDER BY run_id, sort_order, type_key'
+        )->fetchAll();
+
+        $byRun = [];
+
+        foreach ($rows as $row) {
+            $byRun[(int) $row['run_id']][] = $row;
+        }
+
+        return $byRun;
     }
 
     // -----------------------------------------------------------------

@@ -28,9 +28,14 @@ $state = static function (?bool $ok) use ($e, $t): string {
         <p><?= $e($t('integrations.subtitle')) ?></p>
     </div>
 
-    <a href="/integrations/add" class="btn btn-primary btn-inline">
-        <?= $e($t('integrations.add_vcenter')) ?>
-    </a>
+    <div class="head-actions">
+        <a href="/integrations/add" class="btn btn-primary btn-inline">
+            <?= $e($t('integrations.add_vcenter')) ?>
+        </a>
+        <a href="/integrations/add?type=brocade" class="btn btn-inline">
+            <?= $e($t('integrations.add_brocade')) ?>
+        </a>
+    </div>
 </div>
 
 <?php if ($integrations === []): ?>
@@ -62,6 +67,12 @@ $state = static function (?bool $ok) use ($e, $t): string {
                         <?php if (!$i->isActive): ?>
                             <span class="badge badge-idle"><?= $e($t('integrations.disabled')) ?></span>
                         <?php endif; ?>
+
+                        <!-- Which kind of source. Worth saying on the row:
+                             the two are collected differently and reached over
+                             different protocols, and the address alone does
+                             not tell them apart. -->
+                        <div class="sub"><?= $e($t('integrations.kind_' . $i->type)) ?></div>
                     </td>
 
                     <td class="data"><?= $e($i->endpoint()) ?></td>

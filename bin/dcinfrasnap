@@ -498,7 +498,7 @@ if (str_starts_with($command, 'integration')) {
         if ($integration->isBrocade()) {
             try {
                 $client = (new BrocadeClientFactory(timeout: 60))
-                    ->make($integration, $integrations->password($integration->id));
+                    ->make($integration, $repo->password($integration->id));
 
                 $result  = $client->testConnection();
                 $message = 'connected to ' . ($result['name'] ?? 'switch')
@@ -651,12 +651,16 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
     $integrations = new IntegrationRepository($pdo, $secret);
     $runs         = new RunRepository($pdo);
 
+    // Both client factories are handed over, and the collector picks the one
+    // that matches the source. A switch gets a longer timeout than a vCenter
+    // call because the whole batch runs in a single login.
     $makeCollector = static fn (?callable $reporter = null): Collector => new Collector(
         $integrations,
         $runs,
         new InventoryRepository($pdo),
         new RawObjectRepository($pdo),
         new ClientFactory(timeout: 300),
+        new BrocadeClientFactory(timeout: 300),
         $reporter,
     );
 
@@ -681,6 +685,10 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
     };
 
     // --- runs ------------------------------------------------------------
+    //
+    // One line per run, then one indented line listing what it collected.
+    // Not a column per type: a vCenter run and a switch run have no types in
+    // common, so fixed columns would be half empty whichever source it was.
     if ($command === 'runs') {
         $recent = $runs->recent(25);
 
@@ -689,27 +697,43 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
             exit(0);
         }
 
-        $stdout(sprintf(
-            '%-5s %-20s %-9s %-19s %7s %7s %7s %7s %7s %6s',
-            'RUN', 'SOURCE', 'STATUS', 'QUEUED (UTC)',
-            'CLUSTER', 'HOST', 'VM', 'DSTORE', 'LIC', 'CALLS'
+        $types = $runs->typesFor(array_map(
+            static fn (array $run): int => (int) $run['id'],
+            $recent
         ));
-        $stdout(str_repeat('-', 118));
+
+        $stdout(sprintf(
+            '%-5s %-22s %-9s %-19s %6s',
+            'RUN', 'SOURCE', 'STATUS', 'QUEUED (UTC)', 'CALLS'
+        ));
+        $stdout(str_repeat('-', 70));
 
         foreach ($recent as $run) {
             $stdout(sprintf(
-                '%-5d %-20s %-9s %-19s %7s %7s %7s %7s %7s %6d',
+                '%-5d %-22s %-9s %-19s %6d',
                 $run['id'],
-                mb_strimwidth((string) $run['integration_name'], 0, 20, '..'),
+                mb_strimwidth((string) $run['integration_name'], 0, 22, '..'),
                 $run['status'],
                 (string) $run['queued_at'],
-                $run['clusters_status'] === 'ok' ? $run['clusters_found'] : strtoupper((string) $run['clusters_status']),
-                $run['hosts_status'] === 'ok' ? $run['hosts_found'] : strtoupper((string) $run['hosts_status']),
-                $run['vms_status'] === 'ok' ? $run['vms_found'] : strtoupper((string) $run['vms_status']),
-                $run['datastores_status'] === 'ok' ? $run['datastores_found'] : strtoupper((string) $run['datastores_status']),
-                $run['licenses_status'] === 'ok' ? $run['licenses_found'] : strtoupper((string) $run['licenses_status']),
                 $run['api_calls']
             ));
+
+            $parts = [];
+
+            foreach ($types[(int) $run['id']] ?? [] as $type) {
+                $parts[] = $type['status'] === 'ok'
+                    ? sprintf(
+                        '%s %d%s',
+                        $type['type_key'],
+                        $type['found'],
+                        (int) $type['changed'] > 0 ? '(+' . $type['changed'] . ')' : ''
+                    )
+                    : $type['type_key'] . ' FAILED';
+            }
+
+            if ($parts !== []) {
+                $stdout('      ' . implode('  ', $parts));
+            }
 
             if ($run['error_message'] !== null) {
                 $stdout('      ' . mb_strimwidth((string) $run['error_message'], 0, 110, '..'));
@@ -717,6 +741,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
         }
 
         $stdout();
+        $stdout('A number in brackets is how many objects were new or changed.');
         exit(0);
     }
 
@@ -749,7 +774,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
         $result    = $collector->run($integration, 0, dryRun: true);
 
         $stdout();
-        $stdout('Nothing was written. SOAP calls: ' . $result['api_calls']);
+        $stdout('Nothing was written. Calls to the source: ' . $result['api_calls']);
 
         exit($result['status'] === 'failed' ? 1 : 0);
     }
@@ -989,7 +1014,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
 
         $stdout();
         $stdout(sprintf(
-            'Finished: %s. SOAP calls: %d.',
+            'Finished: %s. Calls to the source: %d.',
             strtoupper($result['status']),
             $result['api_calls']
         ));
@@ -1089,7 +1114,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
                 $result = $makeCollector($stdout)->run($integration, $runId);
 
                 $stdout(sprintf(
-                    "Run {$runId} finished: %s, %d SOAP calls.",
+                    "Run {$runId} finished: %s, %d call(s) to the source.",
                     strtoupper($result['status']),
                     $result['api_calls']
                 ));
