@@ -15,6 +15,13 @@ namespace DcInfraSnap\Integration;
 final class Integration
 {
     public const TYPE_VCENTER = 'vcenter';
+    public const TYPE_BROCADE = 'brocade';
+
+    /** Source types this build can collect from, and their default port. */
+    public const TYPES = [
+        self::TYPE_VCENTER => 443,
+        self::TYPE_BROCADE => 22,
+    ];
 
     public function __construct(
         public readonly int $id,
@@ -57,8 +64,26 @@ final class Integration
         );
     }
 
+    public static function defaultPort(string $type): int
+    {
+        return self::TYPES[$type] ?? 443;
+    }
+
+    public function isBrocade(): bool
+    {
+        return $this->type === self::TYPE_BROCADE;
+    }
+
+    public function isVCenter(): bool
+    {
+        return $this->type === self::TYPE_VCENTER;
+    }
+
     /**
      * The base URL, with the port left off when it is the default.
+     *
+     * Only meaningful for an HTTPS source. A Brocade switch is reached over
+     * SSH and has no base URL.
      */
     public function baseUrl(): string
     {

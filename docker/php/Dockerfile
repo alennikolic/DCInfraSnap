@@ -6,12 +6,18 @@
 
 FROM php:8.3-fpm-alpine
 
-# Runtime libraries
+# Runtime libraries, and the SSH client used to read Brocade switches.
+#
+# sshpass is what lets the password reach ssh without a terminal. It is used
+# with -e, which reads the password from the environment; sshpass -p would put
+# it in the process list where any user on the host could read it with ps.
 RUN apk add --no-cache \
         libsodium \
         libxml2 \
         icu-libs \
-        tzdata
+        tzdata \
+        openssh-client \
+        sshpass
 
 # PHP extensions.
 # PHPIZE_DEPS and the *-dev packages are installed temporarily and removed

@@ -12,7 +12,8 @@
 //   bin/dcinfrasnap password:hash        generate APP_PASSWORD_HASH for the GUI
 //   bin/dcinfrasnap lang:check           compare language files against English
 //   bin/dcinfrasnap integrations         list the configured sources
-//   bin/dcinfrasnap integration:add      add a vCenter (interactive)
+//   bin/dcinfrasnap integration:add      add a source (interactive)
+//   bin/dcinfrasnap brocade:dry <id>     read a switch and print it, write nothing
 //   bin/dcinfrasnap integration:test <id>      check the connection
 //   bin/dcinfrasnap integration:password <id>  change the password
 //   bin/dcinfrasnap integration:enable <id>
@@ -46,10 +47,13 @@ use DcInfraSnap\Core\Migrator;
 use DcInfraSnap\Core\Secret;
 use DcInfraSnap\I18n\Translator;
 use DcInfraSnap\Collector\Collector;
+use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryRepository;
 use DcInfraSnap\Inventory\RawObjectRepository;
 use DcInfraSnap\Run\RunRepository;
+use DcInfraSnap\Source\Brocade\BrocadeException;
+use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 
@@ -117,7 +121,7 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  lang:check           compare language files against English');
     $stdout();
     $stdout('  integrations                list the configured sources');
-    $stdout('  integration:add             add a vCenter (interactive)');
+    $stdout('  integration:add             add a source (vCenter or Brocade)');
     $stdout('  integration:test <id>       check the connection');
     $stdout('  integration:password <id>   change the password');
     $stdout('  integration:enable <id>');
@@ -130,6 +134,7 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  discover:queue --all        queue every active source');
     $stdout('  runs                        recent collections');
     $stdout('  runs:reset <run>            release a stuck run');
+    $stdout('  brocade:dry <id>            read a switch and print it, write nothing');
     $stdout('  worker                      process the collection queue');
     $stdout('  help                 this list');
     $stdout();
@@ -379,10 +384,19 @@ if (str_starts_with($command, 'integration')) {
 
     // --- integration:add -------------------------------------------------
     if ($command === 'integration:add') {
-        $stdout('New vCenter source.');
+        $stdout('New source.');
+        $stdout();
+        $stdout('  1) vCenter      (vSphere API over HTTPS)');
+        $stdout('  2) Brocade      (FC switch over SSH)');
         $stdout();
 
-        $hostname = $ask('Hostname or IP of the vCenter');
+        $choice = $ask('Which kind', '1');
+        $type   = $choice === '2' ? Integration::TYPE_BROCADE : Integration::TYPE_VCENTER;
+        $label  = $type === Integration::TYPE_BROCADE ? 'switch' : 'vCenter';
+
+        $stdout();
+
+        $hostname = $ask('Hostname or IP of the ' . $label);
 
         if ($hostname === '') {
             $stderr('The address is required.');
@@ -395,7 +409,7 @@ if (str_starts_with($command, 'integration')) {
         }
 
         $name     = $ask('Name for this source', $hostname);
-        $port     = (int) $ask('Port', '443');
+        $port     = (int) $ask('Port', (string) Integration::defaultPort($type));
         $username = $ask('Username (a read-only account is enough)');
 
         if ($username === '') {
@@ -410,7 +424,12 @@ if (str_starts_with($command, 'integration')) {
             exit(1);
         }
 
-        $verify = strtolower($ask('Verify the TLS certificate? (y/N)', 'n')) === 'y';
+        $verify = strtolower($ask(
+            $type === Integration::TYPE_BROCADE
+                ? 'Verify the SSH host key? (y/N)'
+                : 'Verify the TLS certificate? (y/N)',
+            'n'
+        )) === 'y';
 
         try {
             $newId = $repo->create(
@@ -420,6 +439,7 @@ if (str_starts_with($command, 'integration')) {
                 password: $password,
                 port: $port,
                 verifyPeer: $verify,
+                type: $type,
             );
         } catch (Throwable $e) {
             $stderr($e->getMessage());
@@ -472,6 +492,40 @@ if (str_starts_with($command, 'integration')) {
         $integration = $requireIntegration();
 
         $stdout("Connecting to {$integration->endpoint()} as {$integration->username} ...");
+
+        // A Brocade switch is reached over SSH, a vCenter over HTTPS, so the
+        // test differs even though the recorded outcome does not.
+        if ($integration->isBrocade()) {
+            try {
+                $client = (new BrocadeClientFactory(timeout: 60))
+                    ->make($integration, $repo->password($integration->id));
+
+                $result  = $client->testConnection();
+                $message = 'connected to ' . ($result['name'] ?? 'switch')
+                    . ', FOS ' . ($result['fos_version'] ?? '?');
+
+                $repo->recordTest($integration->id, true, $message, $result['fos_version']);
+
+                $stdout();
+                $stdout('OK — ' . $message);
+                $stdout('  switch WWN   : ' . ($result['switch_wwn'] ?? '—'));
+                $stdout('  domain id    : ' . ($result['domain_id'] ?? '—'));
+                $stdout('  FOS version  : ' . ($result['fos_version'] ?? '—'));
+
+                if ($result['legacy']) {
+                    $stdout();
+                    $stdout('  NOTE: this switch needed the legacy SSH algorithm set.');
+                }
+
+                exit(0);
+            } catch (Throwable $e) {
+                $repo->recordTest($integration->id, false, $e->getMessage());
+
+                $stderr();
+                $stderr('FAILED: ' . $e->getMessage());
+                exit(1);
+            }
+        }
 
         $factory = new ClientFactory(timeout: 30);
 
@@ -585,7 +639,8 @@ if (str_starts_with($command, 'integration')) {
 // =======================================================================
 // Collecting
 // =======================================================================
-if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'runs:reset', 'worker'], true)) {
+if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'runs:reset',
+                        'worker', 'brocade:dry'], true)) {
     try {
         $secret = new Secret($config['secret_key']);
     } catch (Throwable $e) {
@@ -697,6 +752,223 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
         $stdout('Nothing was written. SOAP calls: ' . $result['api_calls']);
 
         exit($result['status'] === 'failed' ? 1 : 0);
+    }
+
+    // --- brocade:dry -------------------------------------------------------
+    //
+    // Read a switch and print everything that was parsed. Writes nothing.
+    // This is the command to run first on a new switch: it shows what the
+    // account can actually see and whether every parser found its section.
+    if ($command === 'brocade:dry') {
+        $integration = $requireSource();
+
+        if (!$integration->isBrocade()) {
+            $stderr($integration->name . ' is not a Brocade source.');
+            exit(1);
+        }
+
+        $stdout("Connecting to {$integration->endpoint()} as {$integration->username} ...");
+
+        try {
+            $client = (new BrocadeClientFactory(timeout: 180))
+                ->make($integration, $repo->password($integration->id));
+
+            $client->collect();
+        } catch (Throwable $e) {
+            $stderr();
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        }
+
+        $sw = $client->switchInfo();
+
+        $stdout();
+        $stdout('Connected. Commands run: ' . $client->commandCount()
+            . ($client->usedLegacyAlgorithms() ? ' (legacy SSH algorithms needed)' : ''));
+
+        // --- which parsers found their section ---
+        $stdout();
+        $stdout('Output per command:');
+
+        foreach ($client->coverage() as $section => $lines) {
+            $stdout(sprintf('  %-22s %s', $section,
+                $lines === 0 ? 'NOTHING — check the account\'s permissions' : $lines . ' lines'));
+        }
+
+        // --- switch ---
+        $stdout();
+        $stdout('Switch:');
+
+        foreach ([
+            'name' => 'name', 'switch_wwn' => 'WWN', 'domain_id' => 'domain id',
+            'switch_type' => 'type', 'state' => 'state', 'role' => 'role',
+            'fos_version' => 'FOS', 'vf_id' => 'virtual fabric id',
+            'effective_config' => 'effective zone config',
+        ] as $key => $label) {
+            $stdout(sprintf('  %-22s %s', $label, $sw[$key] ?? '—'));
+        }
+
+        // --- chassis ---
+        $chassis = $client->chassis();
+
+        foreach ($chassis['units'] as $unit) {
+            if ($unit['kind'] === 'CHASSIS/WWN') {
+                $stdout(sprintf('  %-22s %s', 'serial number',
+                    ($unit['Factory Serial Num'] ?? '—') . '  (OEM: ' . ($unit['Serial Num'] ?? '—') . ')'));
+                $stdout(sprintf('  %-22s %s', 'part number',
+                    ($unit['Factory Part Num'] ?? '—') . '  (OEM: ' . ($unit['Part Num'] ?? '—') . ')'));
+                $stdout(sprintf('  %-22s %s', 'oem id', $unit['ID'] ?? '—'));
+            }
+        }
+
+        $stdout(sprintf('  %-22s %s', 'chassis units',
+            implode(', ', array_map(static fn (array $u): string => $u['kind'] . ' ' . $u['unit'], $chassis['units']))));
+
+        // --- fabric ---
+        $fabric = $client->fabric();
+
+        $stdout();
+        $stdout('Fabric: ' . count($fabric['members']) . ' member(s), switch reports '
+            . ($fabric['declared_count'] ?? '?')
+            . ($fabric['fabric_name'] === null ? ', no fabric name configured' : ', name "' . $fabric['fabric_name'] . '"'));
+
+        foreach ($fabric['members'] as $member) {
+            $stdout(sprintf('  domain %-3d %s  %-15s %-16s %s',
+                $member['domain_id'], $member['switch_wwn'],
+                $member['ip_address'] ?? '—', $member['switch_name'] ?? '—',
+                $member['is_principal'] ? 'PRINCIPAL' : ''));
+        }
+
+        // --- ports ---
+        $ports    = $client->ports();
+        $licensed = array_filter($ports, static fn (array $p): bool => $p['is_licensed'] === 1);
+        $active   = array_filter($licensed, static fn (array $p): bool => $p['port_type'] !== null);
+        $named    = array_filter($ports, static fn (array $p): bool => $p['name_is_default'] === false);
+
+        $stdout();
+        $stdout(sprintf('Ports: %d total, %d licensed, %d with a port type, %d with a non-default name',
+            count($ports), count($licensed), count($active), count($named)));
+
+        foreach ($active as $index => $port) {
+            $stdout(sprintf('  %3d %-7s %-10s %4s%s %-8s %s%s%s',
+                $index, $port['port_type'], $port['state'],
+                $port['speed_gb'] === null ? '—' : $port['speed_gb'] . 'G',
+                $port['speed_mode'] === 'auto' ? ' auto' : ' fix ',
+                $port['fcid'],
+                $port['attached_wwpn'] !== null ? 'device ' . $port['attached_wwpn'] : '',
+                $port['npiv_count'] !== null ? 'NPIV x' . $port['npiv_count'] : '',
+                $port['neighbor_switch_wwn'] !== null
+                    ? 'ISL to ' . $port['neighbor_switch_wwn'] . ' "' . ($port['neighbor_switch_name'] ?? '?') . '"'
+                    : ''));
+
+            if ($port['trunk_master_port'] !== null) {
+                $stdout(sprintf('      trunk member, master is port %d', $port['trunk_master_port']));
+            }
+        }
+
+        // --- ISLs ---
+        $isls = $client->isls();
+
+        $stdout();
+        $stdout('ISLs: ' . count($isls));
+
+        foreach ($isls as $isl) {
+            $stdout(sprintf('  port %d -> port %d on %s "%s" (domain %d)',
+                $isl['local_port'], $isl['remote_port'], $isl['remote_switch_wwn'],
+                $isl['remote_switch_name'], $isl['remote_domain_id']));
+            $stdout(sprintf('      %dG link, %dG bandwidth, %d member port(s) [%s], flags: %s',
+                $isl['speed_gb'], $isl['bandwidth_gb'], $isl['member_count'],
+                implode(',', $isl['member_ports']), $isl['flags'] ?? '—'));
+        }
+
+        // --- name server ---
+        $ns = $client->nameServer();
+
+        $stdout();
+        $stdout(sprintf('Name server: %d entries parsed, switch declared %s%s',
+            count($ns['devices']), $ns['declared_count'] ?? '?',
+            $ns['declared_count'] !== null && $ns['declared_count'] !== count($ns['devices'])
+                ? '  <-- MISMATCH, the parser missed some' : ''));
+
+        foreach ($ns['devices'] as $device) {
+            $stdout(sprintf('  %s port %-3s %s', $device['fcid'],
+                $device['port_index'] ?? '?', $device['wwpn']));
+            $stdout(sprintf('      wwnn=%s  %s  fc4=%s%s',
+                $device['wwnn'], $device['device_type'] ?? '—',
+                $device['fc4_types'] ?? '—',
+                $device['is_npiv'] ? '  (NPIV)' : ''));
+
+            foreach (['node_symb' => 'node', 'port_symb' => 'port'] as $key => $label) {
+                if ($device[$key] !== null) {
+                    $stdout(sprintf('      %s symbolic: %s', $label, $device[$key]));
+                }
+            }
+        }
+
+        // --- zoning ---
+        $zoning = $client->zoning();
+        $byKind = [];
+
+        foreach ($zoning['objects'] as $object) {
+            $byKind[$object['section'] . ' ' . $object['kind']][] = $object['name'];
+        }
+
+        $stdout();
+        $stdout('Zoning:');
+
+        foreach ($byKind as $label => $names) {
+            $stdout(sprintf('  %-18s %d', $label, count($names)));
+        }
+
+        // The point of keeping both sections: a zone whose defined members
+        // are alias names and whose effective members are WWPNs.
+        $sample = null;
+
+        foreach ($zoning['objects'] as $object) {
+            if ($object['section'] === 'defined' && $object['kind'] === 'zone') {
+                $sample = $object['name'];
+                break;
+            }
+        }
+
+        if ($sample !== null) {
+            $stdout();
+            $stdout('  sample zone "' . $sample . '":');
+            $stdout('    defined   ' . implode(' , ', $zoning['members']['defined|zone|' . $sample] ?? []));
+            $stdout('    effective ' . implode(' , ', $zoning['members']['effective|zone|' . $sample] ?? []));
+        }
+
+        // Aliases pointing at a WWPN that is not logged in to this switch.
+        // Normal when the device sits on the other fabric switch; worth
+        // seeing, because what remains after every switch is collected is
+        // genuinely zoned-but-absent.
+        $present = array_column($ns['devices'], 'wwpn');
+        $absent  = [];
+
+        foreach ($zoning['objects'] as $object) {
+            if ($object['section'] !== 'defined' || $object['kind'] !== 'alias') {
+                continue;
+            }
+
+            foreach ($zoning['members']['defined|alias|' . $object['name']] ?? [] as $member) {
+                if (preg_match('/^[0-9a-f:]{23}$/', $member) === 1 && !in_array($member, $present, true)) {
+                    $absent[$object['name']] = $member;
+                }
+            }
+        }
+
+        if ($absent !== []) {
+            $stdout();
+            $stdout('  aliases whose WWPN is not logged in to THIS switch (' . count($absent) . '):');
+
+            foreach ($absent as $alias => $wwpn) {
+                $stdout(sprintf('    %-26s %s', $alias, $wwpn));
+            }
+        }
+
+        $stdout();
+        $stdout('Nothing was written to the database.');
+        exit(0);
     }
 
     // --- discover ---------------------------------------------------------
