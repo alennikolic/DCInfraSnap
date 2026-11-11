@@ -70,6 +70,9 @@ $number = static fn (int $n): string => number_format($n, 0, '.', ' ');
             'nav.vms'        => $counts['vms'],
             'nav.datastores' => $counts['datastores'],
             'nav.licenses'   => $counts['licenses'],
+            'overview.switches' => $counts['switches'],
+            'overview.fc_ports' => $counts['fc_ports'],
+            'overview.zones'    => $counts['zones'],
             'nav.runs'       => $counts['runs'],
         ];
         ?>

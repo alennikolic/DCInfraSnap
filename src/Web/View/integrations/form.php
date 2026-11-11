@@ -1,7 +1,11 @@
 <?php
 // src/Web/View/integrations/form.php
 //
-// Add or edit a vCenter.
+// Add or edit a source: a vCenter over HTTPS, or a Brocade switch over SSH.
+//
+// The type is chosen only when adding. Changing it afterwards would mean the
+// collected data belonged to a kind of source the row no longer claims to be,
+// so an existing source keeps the type it was created with.
 //
 // The password field appears only when adding. On edit there is a separate
 // page for it, so the stored credential is never sent back to the browser —
@@ -14,15 +18,20 @@
 /** @var array<string, string> $values */
 /** @var list<string> $errors */
 
+use DcInfraSnap\Integration\Integration;
+
 $isNew = $integration === null;
 $value = static fn (string $key, string $default = ''): string => $values[$key] ?? $default;
+
+$type      = $isNew ? $value('type', Integration::TYPE_VCENTER) : $integration->type;
+$isBrocade = $type === Integration::TYPE_BROCADE;
 ?>
 
 <div class="page-head">
     <div>
         <h1>
             <?= $isNew
-                ? $e($t('integrations.add_vcenter'))
+                ? $e($t($isBrocade ? 'integrations.add_brocade' : 'integrations.add_vcenter'))
                 : $e($t('integrations.edit_title', ['name' => $integration->name])) ?>
         </h1>
         <p><?= $e($t('integrations.form_subtitle')) ?></p>
@@ -42,6 +51,21 @@ $value = static fn (string $key, string $default = ''): string => $values[$key] 
 
     <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
 
+    <?php if ($isNew): ?>
+        <label class="field">
+            <span class="field-label"><?= $e($t('integrations.type')) ?></span>
+            <select name="type">
+                <option value="<?= $e(Integration::TYPE_VCENTER) ?>"
+                    <?= $isBrocade ? '' : 'selected' ?>><?= $e($t('integrations.type_vcenter')) ?></option>
+                <option value="<?= $e(Integration::TYPE_BROCADE) ?>"
+                    <?= $isBrocade ? 'selected' : '' ?>><?= $e($t('integrations.type_brocade')) ?></option>
+            </select>
+            <span class="field-hint"><?= $e($t('integrations.type_hint')) ?></span>
+        </label>
+    <?php else: ?>
+        <input type="hidden" name="type" value="<?= $e($type) ?>">
+    <?php endif; ?>
+
     <label class="field">
         <span class="field-label"><?= $e($t('common.name')) ?></span>
         <input type="text" name="name" required maxlength="100"
@@ -55,13 +79,13 @@ $value = static fn (string $key, string $default = ''): string => $values[$key] 
             <span class="field-label"><?= $e($t('integrations.hostname')) ?></span>
             <input type="text" name="hostname" required maxlength="255"
                    value="<?= $e($value('hostname')) ?>"
-                   placeholder="vcenter.example.local">
+                   placeholder="<?= $e($isBrocade ? 'san-switch-a.example.local' : 'vcenter.example.local') ?>">
         </label>
 
         <label class="field field-port">
             <span class="field-label"><?= $e($t('integrations.port')) ?></span>
             <input type="number" name="port" required min="1" max="65535"
-                   value="<?= $e($value('port', '443')) ?>">
+                   value="<?= $e($value('port', (string) Integration::defaultPort($type))) ?>">
         </label>
     </div>
 
@@ -70,7 +94,7 @@ $value = static fn (string $key, string $default = ''): string => $values[$key] 
         <input type="text" name="username" required maxlength="190"
                autocomplete="off"
                value="<?= $e($value('username')) ?>"
-               placeholder="readonly@vsphere.local">
+               placeholder="<?= $e($isBrocade ? 'admin' : 'readonly@vsphere.local') ?>">
         <span class="field-hint"><?= $e($t('integrations.username_hint')) ?></span>
     </label>
 
@@ -93,8 +117,10 @@ $value = static fn (string $key, string $default = ''): string => $values[$key] 
         <input type="checkbox" name="verify_peer" value="1"
             <?= $value('verify_peer') === '1' ? 'checked' : '' ?>>
         <span>
-            <?= $e($t('integrations.verify_peer')) ?>
-            <span class="field-hint"><?= $e($t('integrations.verify_peer_hint')) ?></span>
+            <?= $e($t($isBrocade ? 'integrations.verify_host_key' : 'integrations.verify_peer')) ?>
+            <span class="field-hint"><?= $e($t($isBrocade
+                ? 'integrations.verify_host_key_hint'
+                : 'integrations.verify_peer_hint')) ?></span>
         </span>
     </label>
 
