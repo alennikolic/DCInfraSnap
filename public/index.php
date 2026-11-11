@@ -18,6 +18,9 @@ use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
 use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Project\ProjectRepository;
+use DcInfraSnap\Report\HtmlWriter;
+use DcInfraSnap\Report\ReportBuilder;
+use DcInfraSnap\Report\ReportQuery;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
 use DcInfraSnap\Source\VCenter\ClientFactory;
@@ -85,6 +88,7 @@ $nav = [
     ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
     ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
     ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
+    ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
     ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
     ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
     ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
@@ -214,6 +218,11 @@ if ($path === '/') {
 } elseif (preg_match('#^/projects/(\d+)/(edit|sources|delete)$#', $path, $m) === 1) {
     $route = 'projects.' . $m[2];
     $id    = (int) $m[1];
+} elseif ($path === '/reports') {
+    // One address for the form and for generating from it. A POST that goes
+    // wrong therefore renders the form again with the message on it, at the
+    // address the person is already looking at.
+    $route = 'reports.index';
 } elseif ($path === '/vms/export') {
     $route = 'vms.export';
 } elseif (preg_match('#^/(vms|hosts)/(\d+)$#', $path, $m) === 1) {
@@ -254,9 +263,13 @@ if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.
 if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
     Flash::error($translator->t('error.csrf'));
 
-    // Back to the list the form belongs to, so the message is read where the
+    // Back to the page the form belongs to, so the message is read where the
     // work was happening rather than on a page the person did not ask for.
-    $redirect(str_starts_with($route, 'projects.') ? '/projects' : '/integrations');
+    $redirect(match (true) {
+        str_starts_with($route, 'projects.') => '/projects',
+        str_starts_with($route, 'reports.')  => '/reports',
+        default                              => '/integrations',
+    });
 }
 
 // -----------------------------------------------------------------------
@@ -701,6 +714,130 @@ if (str_starts_with($route, 'projects.')) {
             ),
         ]));
     }
+}
+
+// =======================================================================
+// Reports
+//
+// Reading and writing a document, no credentials involved, so this sits
+// above the encryption key as well.
+//
+// GET renders the form; POST generates and streams the file. A POST that
+// fails validation falls through to the same render with the messages on it,
+// which is why there is no redirect in between: the ticked boxes survive.
+// =======================================================================
+if ($route === 'reports.index') {
+    $errors = [];
+    $values = ['scope' => 'project', 'project' => ''];
+
+    $selectedSources = [];
+
+    // Everything on by default. The boxes are there to leave a section out,
+    // and the first report somebody generates should be the complete one.
+    $selectedSections = ReportBuilder::allSections();
+
+    if ($method === 'POST') {
+        $values = [
+            'scope'   => ($_POST['scope'] ?? 'project') === 'sources' ? 'sources' : 'project',
+            'project' => trim((string) ($_POST['project'] ?? '')),
+        ];
+
+        $postedSources = is_array($_POST['sources'] ?? null)
+            ? array_values(array_unique(array_map('intval', $_POST['sources'])))
+            : [];
+
+        // Only section keys this build knows. A posted name that is not one
+        // of them is dropped rather than carried into the builder.
+        $postedSections = is_array($_POST['sections'] ?? null)
+            ? array_values(array_intersect(
+                array_map('strval', $_POST['sections']),
+                ReportBuilder::allSections()
+            ))
+            : [];
+
+        $selectedSources  = $postedSources;
+        $selectedSections = $postedSections;
+
+        // The format rides on the submit button. Only HTML exists in this
+        // step; anything else is refused rather than quietly treated as HTML.
+        $format = (string) ($_POST['format'] ?? 'html');
+
+        if ($format !== 'html') {
+            $errors[] = $translator->t('reports.error_format');
+        }
+
+        $project    = null;
+        $reportIds  = [];
+
+        if ($values['scope'] === 'sources') {
+            $reportIds = $postedSources;
+
+            if ($reportIds === []) {
+                $errors[] = $translator->t('reports.error_no_sources');
+            }
+        } else {
+            $project = $values['project'] === '' ? null : $projectRepo->find((int) $values['project']);
+
+            if ($project === null) {
+                $errors[] = $translator->t('reports.error_no_project');
+            } else {
+                $reportIds = $projectRepo->sourceIds($project->id);
+
+                if ($reportIds === []) {
+                    $errors[] = $translator->t('reports.error_project_empty', ['name' => $project->name]);
+                }
+            }
+        }
+
+        if ($postedSections === []) {
+            $errors[] = $translator->t('reports.error_no_sections');
+        }
+
+        if ($errors === []) {
+            $document = (new ReportBuilder(new ReportQuery($pdo), $translator))
+                ->build($reportIds, $postedSections, $project);
+
+            // No chapters means the chosen sources have never been collected
+            // from. Generating the title page of an empty document would look
+            // like a bug in the report rather than a missing collection.
+            if ($document->chapters === []) {
+                $errors[] = $translator->t('reports.error_nothing_collected');
+            } else {
+                $writer = new HtmlWriter();
+
+                // Any buffer in front of this would hold the whole document
+                // in memory for no reason.
+                while (ob_get_level() > 0) {
+                    ob_end_clean();
+                }
+
+                // Inline rather than an attachment: the browser is also the
+                // PDF writer here, so the document opens in a tab where it
+                // can be read and printed straight away. Ctrl+S still saves
+                // it under the name below.
+                header('Content-Type: ' . $writer->contentType());
+                header(
+                    'Content-Disposition: inline; filename="'
+                    . $document->filename() . '.' . $writer->extension() . '"'
+                );
+                header('Cache-Control: no-store');
+
+                echo $writer->write($document);
+
+                exit;
+            }
+        }
+    }
+
+    $respond($view->render('reports/index', [
+        'projects'            => $projectRepo->all(),
+        'projectSourceCounts' => array_map('count', $projectRepo->sourceNamesByProject()),
+        'sources'             => $projectRepo->selectableSources(),
+        'values'              => $values,
+        'selectedSources'     => $selectedSources,
+        'selectedSections'    => $selectedSections,
+        'errors'              => $errors,
+    ]));
 }
 
 // =======================================================================
