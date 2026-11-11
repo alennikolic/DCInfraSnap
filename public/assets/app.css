@@ -692,6 +692,37 @@ tr.is-inactive td {
     border-bottom: 1px solid var(--panel-border);
 }
 
+/* --- What a run collected ---------------------------------------------- */
+/* One pill per object type. A vCenter run shows six, a switch run seven, so
+   the cell wraps rather than assuming a fixed set of columns. */
+.type-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    max-width: 520px;
+}
+
+.type-pill {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 7px;
+    font-size: 11.5px;
+    white-space: nowrap;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    color: var(--text-faint);
+}
+
+.type-pill .data {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.type-pill-failed {
+    border-color: var(--error-soft);
+}
+
 /* --- Capacity bars ----------------------------------------------------- */
 
 .bar-cell {

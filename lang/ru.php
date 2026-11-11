@@ -325,4 +325,21 @@ return [
     'error.not_found'          => 'Такой страницы нет.',
     'error.server'             => 'Что-то пошло не так.',
     'error.csrf'               => 'Форма устарела. Попробуйте ещё раз.',
+
+    // --- Object types, as a run reports them ------------------------------
+    'runs.collected'        => 'Собрано',
+    'type.cluster'          => 'Кластеры',
+    'type.host'             => 'Хосты',
+    'type.vm'               => 'Машины',
+    'type.datastore'        => 'Хранилища',
+    'type.host_device'      => 'Устройства',
+    'type.license'          => 'Лицензии',
+    'type.fc_switch'        => 'Коммутатор',
+    'type.fc_fabric_member' => 'Фабрика',
+    'type.fc_port'          => 'Порты',
+    'type.fc_isl'           => 'ISL-связи',
+    'type.fc_device'        => 'Устройства',
+    'type.fc_zone_object'   => 'Зоны',
+    'type.fc_zone_member'   => 'Члены зон',
+    'type.raw_object'       => 'Исходные данные',
 ];

@@ -324,4 +324,21 @@ return [
     'error.not_found'          => 'Ova stranica ne postoji.',
     'error.server'             => 'Nešto je pošlo naopako.',
     'error.csrf'               => 'Forma je istekla. Pokušaj ponovo.',
+
+    // --- Object types, as a run reports them ------------------------------
+    'runs.collected'        => 'Prikupljeno',
+    'type.cluster'          => 'Klasteri',
+    'type.host'             => 'Hostovi',
+    'type.vm'               => 'Mašine',
+    'type.datastore'        => 'Datastore',
+    'type.host_device'      => 'Uređaji',
+    'type.license'          => 'Licence',
+    'type.fc_switch'        => 'Svič',
+    'type.fc_fabric_member' => 'Fabric',
+    'type.fc_port'          => 'Portovi',
+    'type.fc_isl'           => 'ISL veze',
+    'type.fc_device'        => 'Uređaji',
+    'type.fc_zone_object'   => 'Zone',
+    'type.fc_zone_member'   => 'Članovi zona',
+    'type.raw_object'       => 'Sirovi podaci',
 ];

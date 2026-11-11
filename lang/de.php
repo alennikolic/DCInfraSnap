@@ -326,4 +326,21 @@ return [
     'error.not_found'          => 'Diese Seite gibt es nicht.',
     'error.server'             => 'Etwas ist schiefgegangen.',
     'error.csrf'               => 'Das Formular ist abgelaufen. Bitte noch einmal versuchen.',
+
+    // --- Object types, as a run reports them ------------------------------
+    'runs.collected'        => 'Erfasst',
+    'type.cluster'          => 'Cluster',
+    'type.host'             => 'Hosts',
+    'type.vm'               => 'Maschinen',
+    'type.datastore'        => 'Datastores',
+    'type.host_device'      => 'Geräte',
+    'type.license'          => 'Lizenzen',
+    'type.fc_switch'        => 'Switch',
+    'type.fc_fabric_member' => 'Fabric',
+    'type.fc_port'          => 'Ports',
+    'type.fc_isl'           => 'ISL-Verbindungen',
+    'type.fc_device'        => 'Geräte',
+    'type.fc_zone_object'   => 'Zoning',
+    'type.fc_zone_member'   => 'Zonenmitglieder',
+    'type.raw_object'       => 'Rohdaten',
 ];

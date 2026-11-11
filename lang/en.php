@@ -319,4 +319,21 @@ return [
     'error.not_found'          => 'This page does not exist.',
     'error.server'             => 'Something went wrong.',
     'error.csrf'               => 'The form has expired. Please try again.',
+
+    // --- Object types, as a run reports them ------------------------------
+    'runs.collected'        => 'Collected',
+    'type.cluster'          => 'Clusters',
+    'type.host'             => 'Hosts',
+    'type.vm'               => 'Machines',
+    'type.datastore'        => 'Datastores',
+    'type.host_device'      => 'Devices',
+    'type.license'          => 'Licenses',
+    'type.fc_switch'        => 'Switch',
+    'type.fc_fabric_member' => 'Fabric',
+    'type.fc_port'          => 'Ports',
+    'type.fc_isl'           => 'ISLs',
+    'type.fc_device'        => 'Devices',
+    'type.fc_zone_object'   => 'Zoning',
+    'type.fc_zone_member'   => 'Zone members',
+    'type.raw_object'       => 'Raw payloads',
 ];

@@ -774,7 +774,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
         $result    = $collector->run($integration, 0, dryRun: true);
 
         $stdout();
-        $stdout('Nothing was written. SOAP calls: ' . $result['api_calls']);
+        $stdout('Nothing was written. Calls to the source: ' . $result['api_calls']);
 
         exit($result['status'] === 'failed' ? 1 : 0);
     }
@@ -1014,7 +1014,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
 
         $stdout();
         $stdout(sprintf(
-            'Finished: %s. SOAP calls: %d.',
+            'Finished: %s. Calls to the source: %d.',
             strtoupper($result['status']),
             $result['api_calls']
         ));
@@ -1114,7 +1114,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
                 $result = $makeCollector($stdout)->run($integration, $runId);
 
                 $stdout(sprintf(
-                    "Run {$runId} finished: %s, %d SOAP calls.",
+                    "Run {$runId} finished: %s, %d call(s) to the source.",
                     strtoupper($result['status']),
                     $result['api_calls']
                 ));

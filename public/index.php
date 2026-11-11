@@ -389,8 +389,17 @@ if ($route === 'licenses.index') {
 
 // --- Collection history ---------------------------------------------
 if ($route === 'runs.index') {
+    $runRepository = new RunRepository($pdo);
+    $recent        = $runRepository->recent(100);
+
+    // The per-type outcome for the whole page in one query, rather than one
+    // query per run.
     $respond($view->render('runs/index', [
-        'rows' => (new RunRepository($pdo))->recent(100),
+        'rows'     => $recent,
+        'runTypes' => $runRepository->typesFor(array_map(
+            static fn (array $run): int => (int) $run['id'],
+            $recent
+        )),
     ]));
 }
 
