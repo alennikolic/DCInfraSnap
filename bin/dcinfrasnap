@@ -498,7 +498,7 @@ if (str_starts_with($command, 'integration')) {
         if ($integration->isBrocade()) {
             try {
                 $client = (new BrocadeClientFactory(timeout: 60))
-                    ->make($integration, $repo->password($integration->id));
+                    ->make($integration, $integrations->password($integration->id));
 
                 $result  = $client->testConnection();
                 $message = 'connected to ' . ($result['name'] ?? 'switch')
@@ -771,7 +771,7 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
 
         try {
             $client = (new BrocadeClientFactory(timeout: 180))
-                ->make($integration, $repo->password($integration->id));
+                ->make($integration, $integrations->password($integration->id));
 
             $client->collect();
         } catch (Throwable $e) {
