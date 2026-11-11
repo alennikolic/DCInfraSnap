@@ -583,7 +583,7 @@ final class FosParser
                 continue;
             }
 
-            if (preg_match('/^\s(cfg|zone|alias):\s+(\S+)\s*(.*)$/', $line, $m) === 1) {
+            if (preg_match('/^[ \t]*(cfg|zone|alias):\s+(\S+)\s*(.*)$/', $line, $m) === 1) {
                 $kind = $m[1];
                 $name = $m[2];
                 $key  = $section . '|' . $kind . '|' . $name;
@@ -599,7 +599,19 @@ final class FosParser
                 continue;
             }
 
-            if ($kind !== null && preg_match('/^\s{4,}(\S.*)$/', $line, $m) === 1) {
+            // A continuation line: the member list of the object above,
+            // carried on because cfgshow wraps it.
+            //
+            // MATCHED BY "STARTS WITH WHITESPACE", NOT BY HOW MUCH. FOS
+            // indents these with two TABS, which is two characters, so the
+            // obvious-looking /^\s{4,}/ matches nothing on a real switch and
+            // every member is silently lost — 82 zones with no members, which
+            // is what happened. It passed its test because the recorded
+            // output had been through a terminal that expanded tabs to
+            // spaces. Object lines are matched and consumed above, and blank
+            // lines cannot match \S, so anything indented left here belongs
+            // to the object above it.
+            if ($kind !== null && preg_match('/^[ \t]+(\S.*)$/', $line, $m) === 1) {
                 self::addMembers($members, $section . '|' . $kind . '|' . $name, $m[1]);
             }
         }
