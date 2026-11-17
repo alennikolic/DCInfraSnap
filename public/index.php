@@ -383,10 +383,24 @@ if ($route === 'overview') {
         'zones'        => (int) $pdo->query(
             "SELECT COUNT(*) FROM fc_zone_object WHERE section = 'defined' AND kind = 'zone'"
         )->fetchColumn(),
+
+        // Hyper-V. Counted from its own tables: an hv_node is not a vc_host
+        // and adding them together would answer a question nobody asked.
+        'hv_clusters'  => (int) $pdo->query('SELECT COUNT(*) FROM hv_cluster')->fetchColumn(),
+        'hv_hosts'     => (int) $pdo->query('SELECT COUNT(*) FROM hv_node')->fetchColumn(),
+        'hv_vms'       => (int) $pdo->query('SELECT COUNT(*) FROM hv_vm')->fetchColumn(),
+        'hv_shared'    => (int) $pdo->query(
+            'SELECT COUNT(*) FROM (
+                 SELECT 1 FROM hv_vm_disk
+                  WHERE disk_path IS NOT NULL
+                  GROUP BY integration_id, disk_path
+                 HAVING COUNT(*) > 1 OR MAX(is_shared) = 1
+             ) AS shared'
+        )->fetchColumn(),
     ];
 
     $sources = $pdo->query(
-        'SELECT id, name, hostname, port, is_active, last_tested_at, last_test_ok
+        'SELECT id, name, type, hostname, port, is_active, last_tested_at, last_test_ok
            FROM integration
           ORDER BY name'
     )->fetchAll();
@@ -1066,6 +1080,22 @@ $readForm = static function (bool $requirePassword) use ($translator): array {
         $errors[] = $translator->t('integrations.error_name');
     }
 
+    // An offline source is a label and a cluster name. Everything below this
+    // is about reaching something over the network, which it does not do:
+    // asking for a port and an account would be asking for values that are
+    // then stored as NULL.
+    if (in_array($type, Integration::OFFLINE_TYPES, true)) {
+        if ($values['hostname'] === '') {
+            $errors[] = $translator->t('integrations.error_cluster_name');
+        }
+
+        $values['port']        = (string) Integration::defaultPort($type);
+        $values['username']    = '';
+        $values['verify_peer'] = '0';
+
+        return ['values' => $values, 'errors' => $errors];
+    }
+
     if ($values['hostname'] === '') {
         $errors[] = $translator->t('integrations.error_hostname');
     } elseif (preg_match('#^https?://#i', $values['hostname']) === 1) {
@@ -1114,21 +1144,39 @@ if ($route === 'integrations.add') {
     $errors = [];
 
     if ($method === 'POST') {
-        ['values' => $values, 'errors' => $errors] = $readForm(true);
+        $isOffline = in_array($values['type'] ?? '', Integration::OFFLINE_TYPES, true)
+            || in_array((string) ($_POST['type'] ?? ''), Integration::OFFLINE_TYPES, true);
+
+        ['values' => $values, 'errors' => $errors] = $readForm(!$isOffline);
 
         if ($errors === []) {
             try {
-                $newId = $repo->create(
-                    name: $values['name'],
-                    hostname: $values['hostname'],
-                    username: $values['username'],
-                    password: (string) $_POST['password'],
-                    port: (int) $values['port'],
-                    verifyPeer: $values['verify_peer'] === '1',
-                    type: $values['type'],
-                );
+                if (in_array($values['type'], Integration::OFFLINE_TYPES, true)) {
+                    $newId = $repo->createOffline(
+                        name: $values['name'],
+                        hostname: $values['hostname'],
+                        type: $values['type'],
+                    );
+                } else {
+                    $newId = $repo->create(
+                        name: $values['name'],
+                        hostname: $values['hostname'],
+                        username: $values['username'],
+                        password: (string) $_POST['password'],
+                        port: (int) $values['port'],
+                        verifyPeer: $values['verify_peer'] === '1',
+                        type: $values['type'],
+                    );
+                }
 
                 Flash::success($translator->t('integrations.added', ['name' => $values['name']]));
+
+                // Where to go next differs by kind: a connection is tested,
+                // an offline source is collected by downloading the script.
+                if (in_array($values['type'], Integration::OFFLINE_TYPES, true)) {
+                    $redirect('/integrations/' . $newId . '/hyperv');
+                }
+
                 Flash::info($translator->t('integrations.added_hint'));
 
                 $redirect('/integrations');
@@ -1171,6 +1219,7 @@ if ($route === 'integrations.edit') {
                     port: (int) $values['port'],
                     username: $values['username'],
                     verifyPeer: $values['verify_peer'] === '1',
+                    type: $integration->type,
                 );
 
                 Flash::success($translator->t('integrations.saved'));

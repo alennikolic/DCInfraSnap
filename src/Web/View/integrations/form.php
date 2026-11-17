@@ -1,7 +1,13 @@
 <?php
 // src/Web/View/integrations/form.php
 //
-// Add or edit a source: a vCenter over HTTPS, or a Brocade switch over SSH.
+// Add or edit a source: a vCenter over HTTPS, a Brocade switch over SSH, or
+// Hyper-V, which is collected offline.
+//
+// An offline source shows three fields fewer, because it has no connection:
+// no port, no account, no certificate to verify. Leaving them on the form
+// disabled would say "this exists but not for you"; they are simply not
+// part of what a Hyper-V source is.
 //
 // The type is chosen only when adding. Changing it afterwards would mean the
 // collected data belonged to a kind of source the row no longer claims to be,
@@ -25,16 +31,23 @@ $value = static fn (string $key, string $default = ''): string => $values[$key] 
 
 $type      = $isNew ? $value('type', Integration::TYPE_VCENTER) : $integration->type;
 $isBrocade = $type === Integration::TYPE_BROCADE;
+$isOffline = in_array($type, Integration::OFFLINE_TYPES, true);
+
+$title = match (true) {
+    $isOffline => 'integrations.add_hyperv',
+    $isBrocade => 'integrations.add_brocade',
+    default    => 'integrations.add_vcenter',
+};
 ?>
 
 <div class="page-head">
     <div>
         <h1>
             <?= $isNew
-                ? $e($t($isBrocade ? 'integrations.add_brocade' : 'integrations.add_vcenter'))
+                ? $e($t($title))
                 : $e($t('integrations.edit_title', ['name' => $integration->name])) ?>
         </h1>
-        <p><?= $e($t('integrations.form_subtitle')) ?></p>
+        <p><?= $e($t($isOffline ? 'integrations.form_subtitle_offline' : 'integrations.form_subtitle')) ?></p>
     </div>
 </div>
 
@@ -59,6 +72,8 @@ $isBrocade = $type === Integration::TYPE_BROCADE;
                     <?= $isBrocade ? '' : 'selected' ?>><?= $e($t('integrations.type_vcenter')) ?></option>
                 <option value="<?= $e(Integration::TYPE_BROCADE) ?>"
                     <?= $isBrocade ? 'selected' : '' ?>><?= $e($t('integrations.type_brocade')) ?></option>
+                <option value="<?= $e(Integration::TYPE_HYPERV) ?>"
+                    <?= $isOffline ? 'selected' : '' ?>><?= $e($t('integrations.type_hyperv')) ?></option>
             </select>
             <span class="field-hint"><?= $e($t('integrations.type_hint')) ?></span>
         </label>
@@ -74,20 +89,36 @@ $isBrocade = $type === Integration::TYPE_BROCADE;
         <span class="field-hint"><?= $e($t('integrations.name_hint')) ?></span>
     </label>
 
-    <div class="field-row">
-        <label class="field field-grow">
-            <span class="field-label"><?= $e($t('integrations.hostname')) ?></span>
+    <?php if ($isOffline): ?>
+
+        <label class="field">
+            <span class="field-label"><?= $e($t('integrations.cluster_name')) ?></span>
             <input type="text" name="hostname" required maxlength="255"
                    value="<?= $e($value('hostname')) ?>"
-                   placeholder="<?= $e($isBrocade ? 'san-switch-a.example.local' : 'vcenter.example.local') ?>">
+                   placeholder="CL01">
+            <span class="field-hint"><?= $e($t('integrations.cluster_name_hint')) ?></span>
         </label>
 
-        <label class="field field-port">
-            <span class="field-label"><?= $e($t('integrations.port')) ?></span>
-            <input type="number" name="port" required min="1" max="65535"
-                   value="<?= $e($value('port', (string) Integration::defaultPort($type))) ?>">
-        </label>
-    </div>
+    <?php else: ?>
+
+        <div class="field-row">
+            <label class="field field-grow">
+                <span class="field-label"><?= $e($t('integrations.hostname')) ?></span>
+                <input type="text" name="hostname" required maxlength="255"
+                       value="<?= $e($value('hostname')) ?>"
+                       placeholder="<?= $e($isBrocade ? 'san-switch-a.example.local' : 'vcenter.example.local') ?>">
+            </label>
+
+            <label class="field field-port">
+                <span class="field-label"><?= $e($t('integrations.port')) ?></span>
+                <input type="number" name="port" required min="1" max="65535"
+                       value="<?= $e($value('port', (string) Integration::defaultPort($type))) ?>">
+            </label>
+        </div>
+
+    <?php endif; ?>
+
+    <?php if (!$isOffline): ?>
 
     <label class="field">
         <span class="field-label"><?= $e($t('integrations.username')) ?></span>
@@ -123,6 +154,12 @@ $isBrocade = $type === Integration::TYPE_BROCADE;
                 : 'integrations.verify_peer_hint')) ?></span>
         </span>
     </label>
+
+    <?php else: ?>
+
+        <p class="field-hint"><?= $e($t('integrations.offline_note')) ?></p>
+
+    <?php endif; ?>
 
     <div class="form-actions">
         <button type="submit" class="btn btn-primary btn-inline"><?= $e($t('common.save')) ?></button>
