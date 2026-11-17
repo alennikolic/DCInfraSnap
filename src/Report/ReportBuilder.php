@@ -153,6 +153,7 @@ final class ReportBuilder
             chapters: $chapters,
             locale: $this->translator->locale(),
             contentsHeading: $this->t('report.contents'),
+            contentsHint: $this->t('report.contents_hint'),
             generatedAt: $generatedAt,
             footer: $this->t('report.footer'),
         );

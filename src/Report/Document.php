@@ -34,6 +34,10 @@ final class Document
         // this split exists to avoid.
         public readonly string $contentsHeading,
 
+        // What stands in the table of contents until a word processor fills
+        // it in. The HTML writes its own contents and ignores this.
+        public readonly string $contentsHint,
+
         // The whole document describes one moment. Stored as it is printed,
         // so every writer shows the same string rather than each formatting
         // a timestamp its own way.

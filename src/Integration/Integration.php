@@ -16,12 +16,30 @@ final class Integration
 {
     public const TYPE_VCENTER = 'vcenter';
     public const TYPE_BROCADE = 'brocade';
+    public const TYPE_HYPERV  = 'hyperv';
 
-    /** Source types this build can collect from, and their default port. */
+    /**
+     * Source types this build can collect from, and their default port.
+     *
+     * Hyper-V is port 0 because there is nothing to connect to: the data
+     * arrives as a file collected on the host. The port is still part of
+     * uq_integration_endpoint, so 0 keeps "one cluster, one source" working
+     * without pretending there is a service listening somewhere.
+     */
     public const TYPES = [
         self::TYPE_VCENTER => 443,
         self::TYPE_BROCADE => 22,
+        self::TYPE_HYPERV  => 0,
     ];
+
+    /**
+     * Source types that are collected offline.
+     *
+     * These have no credentials and nothing to test: username and
+     * password_encrypted are NULL in the database for them, and a connection
+     * test would have nothing to connect to.
+     */
+    public const OFFLINE_TYPES = [self::TYPE_HYPERV];
 
     public function __construct(
         public readonly int $id,
@@ -77,6 +95,17 @@ final class Integration
     public function isVCenter(): bool
     {
         return $this->type === self::TYPE_VCENTER;
+    }
+
+    public function isHyperV(): bool
+    {
+        return $this->type === self::TYPE_HYPERV;
+    }
+
+    /** Collected from an uploaded file rather than over the network. */
+    public function isOffline(): bool
+    {
+        return in_array($this->type, self::OFFLINE_TYPES, true);
     }
 
     /**

@@ -124,15 +124,19 @@ $scope = ($values['scope'] ?? 'project') === 'sources' ? 'sources' : 'project';
         <?php endforeach; ?>
 
         <div class="form-actions">
-            <!-- The format travels on the button, so the next format is one
+            <!-- The format travels on the button, so a further format is one
                  more button and no change to the handler. -->
-            <button type="submit" name="format" value="html" class="btn btn-primary btn-inline">
+            <button type="submit" name="format" value="docx" class="btn btn-primary btn-inline">
+                <?= $e($t('reports.generate_docx')) ?>
+            </button>
+            <button type="submit" name="format" value="html" class="btn btn-inline">
                 <?= $e($t('reports.generate_html')) ?>
             </button>
         </div>
     </form>
 
     <p class="note-block"><?= $e($t('reports.language_note')) ?></p>
+    <p class="note-block"><?= $e($t('reports.docx_note')) ?></p>
     <p class="note-block"><?= $e($t('reports.pdf_note')) ?></p>
 
 <?php endif; ?>

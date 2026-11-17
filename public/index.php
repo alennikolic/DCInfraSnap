@@ -16,13 +16,23 @@ use DcInfraSnap\I18n\Translator;
 use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
+use DcInfraSnap\Inventory\InventoryRepository;
+use DcInfraSnap\Inventory\RawObjectRepository;
 use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Project\ProjectRepository;
+use DcInfraSnap\Report\DocxWriter;
 use DcInfraSnap\Report\HtmlWriter;
 use DcInfraSnap\Report\ReportBuilder;
 use DcInfraSnap\Report\ReportQuery;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
+use DcInfraSnap\Source\Hyperv\CollectorScript;
+use DcInfraSnap\Source\Hyperv\HypervException;
+use DcInfraSnap\Source\Hyperv\ImportFileRepository;
+use DcInfraSnap\Source\Hyperv\ImportToken;
+use DcInfraSnap\Source\Hyperv\OfflineImporter;
+use DcInfraSnap\Source\Hyperv\OfflineMapper;
+use DcInfraSnap\Source\Hyperv\OfflinePayload;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
@@ -75,23 +85,58 @@ $translator = new Translator(
 );
 
 // -----------------------------------------------------------------------
-// The menu. Pages arrive over the following steps; until then they appear
-// disabled rather than as links that lead nowhere.
+// The menu, down the left side and grouped by where the data comes from.
+//
+// Grouped rather than one flat row because the three sources answer
+// different questions and the names collide: "clusters" means a vSphere
+// cluster under VMware and a failover cluster under Hyper-V, and a flat list
+// would have to invent longer names to tell them apart. The group says which
+// is which, so each item can keep the name the person actually uses.
+//
+// A group with a null key has no heading — the overview stands on its own.
 // -----------------------------------------------------------------------
 $nav = [
-    ['path' => '/',             'key' => 'nav.overview',     'enabled' => true],
-    ['path' => '/vms',          'key' => 'nav.vms',          'enabled' => true],
-    ['path' => '/hosts',        'key' => 'nav.hosts',        'enabled' => true],
-    ['path' => '/clusters',     'key' => 'nav.clusters',     'enabled' => true],
-    ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => true],
-    ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => true],
-    ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
-    ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
-    ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
-    ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
-    ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
-    ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
-    ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
+    [
+        'key'   => null,
+        'items' => [
+            ['path' => '/', 'key' => 'nav.overview', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_vmware',
+        'items' => [
+            ['path' => '/vms',        'key' => 'nav.vms',        'enabled' => true],
+            ['path' => '/hosts',      'key' => 'nav.hosts',      'enabled' => true],
+            ['path' => '/clusters',   'key' => 'nav.clusters',   'enabled' => true],
+            ['path' => '/datastores', 'key' => 'nav.datastores', 'enabled' => true],
+            ['path' => '/licenses',   'key' => 'nav.licenses',   'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_san',
+        'items' => [
+            ['path' => '/san',    'key' => 'nav.san',    'enabled' => true],
+            ['path' => '/zoning', 'key' => 'nav.zoning', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_hyperv',
+        'items' => [
+            ['path' => '/hyperv',        'key' => 'nav.hyperv_hosts',  'enabled' => true],
+            ['path' => '/hyperv/vms',    'key' => 'nav.hyperv_vms',    'enabled' => true],
+            ['path' => '/hyperv/shared', 'key' => 'nav.hyperv_shared', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_system',
+        'items' => [
+            ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
+            ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
+            ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
+            ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
+            ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
+        ],
+    ],
 ];
 
 $view = new View($config['views_dir'], $translator);
@@ -211,6 +256,28 @@ if ($path === '/') {
 } elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
+} elseif (preg_match('#^/integrations/(\d+)/(hyperv|script|upload|import)$#', $path, $m) === 1) {
+    // The offline source's own page and its three actions. Separate from the
+    // group above because none of them is about a connection.
+    $route = 'hyperv.' . $m[2];
+    $id    = (int) $m[1];
+} elseif (preg_match('#^/integrations/(\d+)/staged/(\d+)/discard$#', $path, $m) === 1) {
+    $route    = 'hyperv.discard';
+    $id       = (int) $m[1];
+    $stagedId = (int) $m[2];
+} elseif ($path === '/hyperv') {
+    // hv.* for the pages that read collected data, hyperv.* for the actions
+    // on a source. Two prefixes because the source section is reached by
+    // "every route that starts with hyperv.", and a browse page must not
+    // fall into it and be asked which source it belongs to.
+    $route = 'hv.hosts';
+} elseif ($path === '/hyperv/vms') {
+    $route = 'hv.machines';
+} elseif ($path === '/hyperv/shared') {
+    $route = 'hv.shared';
+} elseif (preg_match('#^/hyperv/(hosts|vms)/(\d+)$#', $path, $m) === 1) {
+    $route = $m[1] === 'hosts' ? 'hv.host' : 'hv.machine';
+    $id    = (int) $m[2];
 } elseif ($path === '/projects') {
     $route = 'projects.index';
 } elseif ($path === '/projects/add') {
@@ -251,7 +318,8 @@ if ($route === null) {
 
 // Actions that change something are POST only, so they cannot be triggered
 // by a link, a prefetch or an image tag.
-if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect', 'runs.reset'], true)
+if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect', 'runs.reset',
+                      'hyperv.upload', 'hyperv.import', 'hyperv.discard'], true)
     && $method !== 'POST') {
     $respond($view->render('error', [
         'title'   => $translator->t('error.not_found'),
@@ -268,6 +336,7 @@ if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
     $redirect(match (true) {
         str_starts_with($route, 'projects.') => '/projects',
         str_starts_with($route, 'reports.')  => '/reports',
+        str_starts_with($route, 'hyperv.')   => '/integrations/' . $id . '/hyperv',
         default                              => '/integrations',
     });
 }
@@ -314,10 +383,24 @@ if ($route === 'overview') {
         'zones'        => (int) $pdo->query(
             "SELECT COUNT(*) FROM fc_zone_object WHERE section = 'defined' AND kind = 'zone'"
         )->fetchColumn(),
+
+        // Hyper-V. Counted from its own tables: an hv_node is not a vc_host
+        // and adding them together would answer a question nobody asked.
+        'hv_clusters'  => (int) $pdo->query('SELECT COUNT(*) FROM hv_cluster')->fetchColumn(),
+        'hv_hosts'     => (int) $pdo->query('SELECT COUNT(*) FROM hv_node')->fetchColumn(),
+        'hv_vms'       => (int) $pdo->query('SELECT COUNT(*) FROM hv_vm')->fetchColumn(),
+        'hv_shared'    => (int) $pdo->query(
+            'SELECT COUNT(*) FROM (
+                 SELECT 1 FROM hv_vm_disk
+                  WHERE disk_path IS NOT NULL
+                  GROUP BY integration_id, disk_path
+                 HAVING COUNT(*) > 1 OR MAX(is_shared) = 1
+             ) AS shared'
+        )->fetchColumn(),
     ];
 
     $sources = $pdo->query(
-        'SELECT id, name, hostname, port, is_active, last_tested_at, last_test_ok
+        'SELECT id, name, type, hostname, port, is_active, last_tested_at, last_test_ok
            FROM integration
           ORDER BY name'
     )->fetchAll();
@@ -758,11 +841,15 @@ if ($route === 'reports.index') {
         $selectedSources  = $postedSources;
         $selectedSections = $postedSections;
 
-        // The format rides on the submit button. Only HTML exists in this
-        // step; anything else is refused rather than quietly treated as HTML.
-        $format = (string) ($_POST['format'] ?? 'html');
+        // The format rides on the submit button. Anything that is not one of
+        // these is refused rather than quietly treated as HTML.
+        $writer = match ((string) ($_POST['format'] ?? '')) {
+            'html'  => new HtmlWriter(),
+            'docx'  => new DocxWriter(),
+            default => null,
+        };
 
-        if ($format !== 'html') {
+        if ($writer === null) {
             $errors[] = $translator->t('reports.error_format');
         }
 
@@ -803,26 +890,26 @@ if ($route === 'reports.index') {
             if ($document->chapters === []) {
                 $errors[] = $translator->t('reports.error_nothing_collected');
             } else {
-                $writer = new HtmlWriter();
+                $file = $writer->write($document);
 
-                // Any buffer in front of this would hold the whole document
-                // in memory for no reason.
+                // Any buffer in front of this would hold the document twice
+                // over for no reason.
                 while (ob_get_level() > 0) {
                     ob_end_clean();
                 }
 
-                // Inline rather than an attachment: the browser is also the
-                // PDF writer here, so the document opens in a tab where it
-                // can be read and printed straight away. Ctrl+S still saves
-                // it under the name below.
+                // HTML is shown in a tab, because the browser is also where
+                // it gets printed to PDF; a Word file can only be
+                // downloaded. Ctrl+S saves the HTML under the same name.
                 header('Content-Type: ' . $writer->contentType());
                 header(
-                    'Content-Disposition: inline; filename="'
-                    . $document->filename() . '.' . $writer->extension() . '"'
+                    'Content-Disposition: ' . ($writer->isDownload() ? 'attachment' : 'inline')
+                    . '; filename="' . $document->filename() . '.' . $writer->extension() . '"'
                 );
+                header('Content-Length: ' . strlen($file));
                 header('Cache-Control: no-store');
 
-                echo $writer->write($document);
+                echo $file;
 
                 exit;
             }
@@ -837,6 +924,98 @@ if ($route === 'reports.index') {
         'selectedSources'     => $selectedSources,
         'selectedSections'    => $selectedSections,
         'errors'              => $errors,
+    ]));
+}
+
+
+// =======================================================================
+// Hyper-V pages
+//
+// Separate from the vCenter ones because the hv_ tables are separate: a
+// failover cluster node reports only the machines registered on it, and a
+// virtual switch belongs to a host rather than to the cluster.
+// =======================================================================
+if ($route === 'hv.hosts') {
+    $clusters = $inventory->hvClusters();
+    $networks = [];
+    $volumes  = [];
+
+    foreach ($clusters as $cluster) {
+        $key            = (int) $cluster['integration_id'] . ':' . $cluster['moref'];
+        $networks[$key] = $inventory->hvClusterNetworks((int) $cluster['integration_id'], (string) $cluster['moref']);
+        $volumes[$key]  = $inventory->hvVolumes((int) $cluster['integration_id'], (string) $cluster['moref']);
+    }
+
+    $respond($view->render('hyperv/hosts', [
+        'clusters' => $clusters,
+        'networks' => $networks,
+        'volumes'  => $volumes,
+        'nodes'    => $inventory->hvNodes(),
+    ]));
+}
+
+if ($route === 'hv.host') {
+    $node = $inventory->hvNode((int) $id);
+
+    if ($node === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('hyperv/host', [
+        'node'     => $node,
+        'devices'  => $inventory->hvHostDevices((int) $node['integration_id'], (string) $node['moref']),
+        'switches' => $inventory->hvSwitches((int) $node['integration_id'], (string) $node['moref']),
+        'machines' => $inventory->hvVmsOnNode((int) $node['integration_id'], (string) $node['moref']),
+    ]));
+}
+
+if ($route === 'hv.machines') {
+    $filters = [];
+
+    foreach (['q', 'integration', 'state', 'node', 'clustered'] as $name) {
+        $value = trim((string) ($_GET[$name] ?? ''));
+
+        if ($value !== '') {
+            $filters[$name] = $value;
+        }
+    }
+
+    $result = $inventory->hvVms($filters, max(1, (int) ($_GET['page'] ?? 1)));
+
+    $respond($view->render('hyperv/vms', [
+        'machines' => $result['rows'],
+        'total'    => $result['total'],
+        'page'     => $result['page'],
+        'pages'    => $result['pages'],
+        'filters'  => $filters,
+        'options'  => $inventory->hvVmFilterOptions(),
+    ]));
+}
+
+if ($route === 'hv.machine') {
+    $machine = $inventory->hvVm((int) $id);
+
+    if ($machine === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('hyperv/vm', [
+        'machine'     => $machine,
+        'disks'       => $inventory->hvVmDisks((int) $machine['integration_id'], (string) $machine['moref']),
+        'nics'        => $inventory->hvVmNics((int) $machine['integration_id'], (string) $machine['moref']),
+        'checkpoints' => $inventory->hvVmCheckpoints((int) $machine['integration_id'], (string) $machine['moref']),
+    ]));
+}
+
+if ($route === 'hv.shared') {
+    $respond($view->render('hyperv/shared', [
+        'disks' => $inventory->hvSharedDisks(),
     ]));
 }
 
@@ -901,6 +1080,22 @@ $readForm = static function (bool $requirePassword) use ($translator): array {
         $errors[] = $translator->t('integrations.error_name');
     }
 
+    // An offline source is a label and a cluster name. Everything below this
+    // is about reaching something over the network, which it does not do:
+    // asking for a port and an account would be asking for values that are
+    // then stored as NULL.
+    if (in_array($type, Integration::OFFLINE_TYPES, true)) {
+        if ($values['hostname'] === '') {
+            $errors[] = $translator->t('integrations.error_cluster_name');
+        }
+
+        $values['port']        = (string) Integration::defaultPort($type);
+        $values['username']    = '';
+        $values['verify_peer'] = '0';
+
+        return ['values' => $values, 'errors' => $errors];
+    }
+
     if ($values['hostname'] === '') {
         $errors[] = $translator->t('integrations.error_hostname');
     } elseif (preg_match('#^https?://#i', $values['hostname']) === 1) {
@@ -949,21 +1144,39 @@ if ($route === 'integrations.add') {
     $errors = [];
 
     if ($method === 'POST') {
-        ['values' => $values, 'errors' => $errors] = $readForm(true);
+        $isOffline = in_array($values['type'] ?? '', Integration::OFFLINE_TYPES, true)
+            || in_array((string) ($_POST['type'] ?? ''), Integration::OFFLINE_TYPES, true);
+
+        ['values' => $values, 'errors' => $errors] = $readForm(!$isOffline);
 
         if ($errors === []) {
             try {
-                $newId = $repo->create(
-                    name: $values['name'],
-                    hostname: $values['hostname'],
-                    username: $values['username'],
-                    password: (string) $_POST['password'],
-                    port: (int) $values['port'],
-                    verifyPeer: $values['verify_peer'] === '1',
-                    type: $values['type'],
-                );
+                if (in_array($values['type'], Integration::OFFLINE_TYPES, true)) {
+                    $newId = $repo->createOffline(
+                        name: $values['name'],
+                        hostname: $values['hostname'],
+                        type: $values['type'],
+                    );
+                } else {
+                    $newId = $repo->create(
+                        name: $values['name'],
+                        hostname: $values['hostname'],
+                        username: $values['username'],
+                        password: (string) $_POST['password'],
+                        port: (int) $values['port'],
+                        verifyPeer: $values['verify_peer'] === '1',
+                        type: $values['type'],
+                    );
+                }
 
                 Flash::success($translator->t('integrations.added', ['name' => $values['name']]));
+
+                // Where to go next differs by kind: a connection is tested,
+                // an offline source is collected by downloading the script.
+                if (in_array($values['type'], Integration::OFFLINE_TYPES, true)) {
+                    $redirect('/integrations/' . $newId . '/hyperv');
+                }
+
                 Flash::info($translator->t('integrations.added_hint'));
 
                 $redirect('/integrations');
@@ -1006,6 +1219,7 @@ if ($route === 'integrations.edit') {
                     port: (int) $values['port'],
                     username: $values['username'],
                     verifyPeer: $values['verify_peer'] === '1',
+                    type: $integration->type,
                 );
 
                 Flash::success($translator->t('integrations.saved'));
@@ -1106,6 +1320,14 @@ if ($route === 'integrations.test') {
 // minutes, which would outlast the web request — and a browser tab is a poor
 // place to hold a job that must not be interrupted.
 if ($route === 'integrations.collect') {
+    // An offline source is collected by uploading a file, so there is
+    // nothing to queue. Said plainly rather than queueing a run that would
+    // fail in the worker with a connection error.
+    if ($integration->isOffline()) {
+        Flash::error($translator->t('hyperv.cannot_collect', ['name' => $integration->name]));
+        $redirect('/integrations/' . $integration->id . '/hyperv');
+    }
+
     $runs = new RunRepository($pdo);
 
     try {
@@ -1120,6 +1342,230 @@ if ($route === 'integrations.collect') {
     }
 
     $redirect('/integrations');
+}
+
+// =======================================================================
+// Hyper-V: an offline source
+//
+// Download the script, upload what it produced on each host, import the set.
+// None of this talks to the hosts, so there is no connection to test and no
+// credential to hold — the three actions are the whole of collecting here.
+// =======================================================================
+if (str_starts_with($route, 'hyperv.')) {
+    if (!$integration->isHyperV()) {
+        Flash::error($translator->t('hyperv.not_hyperv', ['name' => $integration->name]));
+        $redirect('/integrations');
+    }
+
+    $script     = new CollectorScript((string) $config['root']);
+    $importFile = new ImportFileRepository($pdo);
+    $hypervPage = '/integrations/' . $integration->id . '/hyperv';
+
+    // --- Download the script ------------------------------------------
+    //
+    // Streamed with the source's token already in it. Sent as an attachment
+    // with a name the person can recognise on the host, where several of
+    // these may end up side by side.
+    if ($route === 'hyperv.script') {
+        try {
+            $contents = $script->forIntegration($integration->id, (string) $config['secret_key']);
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Content-Disposition: attachment; filename="'
+            . $script->downloadName() . '"');
+        header('Content-Length: ' . strlen($contents));
+        header('X-Content-Type-Options: nosniff');
+
+        echo $contents;
+        exit;
+    }
+
+    // --- Upload ---------------------------------------------------------
+    if ($route === 'hyperv.upload') {
+        $files = $_FILES['collector_file'] ?? null;
+
+        if (!is_array($files) || !isset($files['name']) || !is_array($files['name'])) {
+            Flash::error($translator->t('hyperv.upload_nothing'));
+            $redirect($hypervPage);
+        }
+
+        $accepted = 0;
+
+        foreach (array_keys($files['name']) as $index) {
+            $name  = (string) $files['name'][$index];
+            $error = (int) $files['error'][$index];
+            $tmp   = (string) $files['tmp_name'][$index];
+
+            if ($error === UPLOAD_ERR_NO_FILE) {
+                continue;
+            }
+
+            // A file larger than the limit arrives as an error code, not as a
+            // short file, so the limit is named rather than left to guess.
+            if ($error === UPLOAD_ERR_INI_SIZE || $error === UPLOAD_ERR_FORM_SIZE) {
+                Flash::error($translator->t('hyperv.upload_too_big', [
+                    'name'  => $name,
+                    'limit' => (string) ini_get('upload_max_filesize'),
+                ]));
+                continue;
+            }
+
+            if ($error !== UPLOAD_ERR_OK || !is_uploaded_file($tmp)) {
+                Flash::error($translator->t('hyperv.upload_failed', ['name' => $name]));
+                continue;
+            }
+
+            try {
+                $payload = OfflinePayload::fromFile($tmp);
+
+                // The token says which source the file was collected for.
+                // Without this check the likeliest mistake — uploading the
+                // lab cluster into the production source — goes unnoticed,
+                // because two clusters look alike in a file.
+                if (!ImportToken::matches(
+                    $payload->sourceToken(),
+                    $integration->id,
+                    (string) $config['secret_key']
+                )) {
+                    Flash::error($translator->t('hyperv.token_mismatch', ['name' => $name]));
+                    continue;
+                }
+
+                if (ImportToken::isManual($payload->sourceToken())) {
+                    Flash::info($translator->t('hyperv.token_manual_note', ['name' => $name]));
+                }
+
+                $importFile->stage($integration->id, $tmp, $name);
+                $accepted++;
+            } catch (Throwable $e) {
+                Flash::error($name . ': ' . $e->getMessage());
+            }
+        }
+
+        if ($accepted > 0) {
+            Flash::success($translator->t('hyperv.upload_ok', ['count' => (string) $accepted]));
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- Throw one staged file away -------------------------------------
+    if ($route === 'hyperv.discard') {
+        $file = $importFile->find($stagedId ?? 0);
+
+        if ($file !== null && (int) $file['integration_id'] === $integration->id) {
+            $importFile->discard((int) $file['id']);
+            Flash::success($translator->t('hyperv.discarded', ['name' => (string) $file['collector_host']]));
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- Import the set -------------------------------------------------
+    if ($route === 'hyperv.import') {
+        try {
+            $payloads = $importFile->stagedPayloads($integration->id);
+
+            if ($payloads === []) {
+                Flash::error($translator->t('hyperv.staged_none'));
+                $redirect($hypervPage);
+            }
+
+            $mapper = new OfflineMapper($payloads);
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        $missing = $mapper->missingNodes();
+        $force   = isset($_POST['force']);
+
+        if ($missing !== [] && !$force) {
+            Flash::error($translator->t('hyperv.missing_blocked', [
+                'nodes' => implode(', ', $missing),
+            ]));
+            $redirect($hypervPage);
+        }
+
+        $runs = new RunRepository($pdo);
+
+        try {
+            // startDirect, not queue: the files are already here, so there is
+            // nothing for the worker to wait for. The lock is the same either
+            // way — active_lock refuses a second concurrent run on insert.
+            $runId = $runs->startDirect($integration->id, 'gui');
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        $importer = new OfflineImporter(
+            new RawObjectRepository($pdo),
+            new InventoryRepository($pdo),
+            $runs,
+        );
+
+        try {
+            $result = $importer->import($integration, $runId, $mapper);
+
+            // Only once the rows are in: a file marked imported whose import
+            // failed is a file nobody will think to upload again.
+            $importFile->markImported($integration->id, $runId);
+
+            $counts = 0;
+
+            foreach ($result['types'] as $type) {
+                $counts += $type['changed'];
+            }
+
+            Flash::success($translator->t('hyperv.imported', [
+                'run'     => (string) $runId,
+                'status'  => $result['status'],
+                'changed' => (string) $counts,
+            ]));
+        } catch (Throwable $e) {
+            $runs->finish($runId, 'failed', 0, $e->getMessage());
+            Flash::error($e->getMessage());
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- The page -------------------------------------------------------
+    $staged   = $importFile->staged($integration->id);
+    $problems = [];
+    $missing  = [];
+    $notes    = [];
+
+    if ($staged !== []) {
+        try {
+            $mapper  = new OfflineMapper($importFile->stagedPayloads($integration->id));
+            $missing = $mapper->missingNodes();
+            $notes   = $mapper->warnings();
+        } catch (HypervException $e) {
+            // The set cannot be imported as it stands — two clusters, two
+            // files from one host, a payload gone from disk. Said here so the
+            // Import button is not offered at all.
+            $problems[] = $e->getMessage();
+        } catch (Throwable $e) {
+            $problems[] = $e->getMessage();
+        }
+    }
+
+    $respond($view->render('integrations/hyperv', [
+        'integration'     => $integration,
+        'staged'          => $staged,
+        'missingNodes'    => $missing,
+        'problems'        => $problems,
+        'notes'           => $notes,
+        'lastImported'    => $importFile->lastImported($integration->id),
+        'uploadLimit'     => (string) ini_get('upload_max_filesize'),
+        'scriptAvailable' => $script->exists(),
+    ]));
 }
 
 // --- Enable / disable --------------------------------------------------

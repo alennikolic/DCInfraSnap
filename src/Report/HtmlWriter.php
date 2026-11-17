@@ -21,7 +21,7 @@ declare(strict_types=1);
 
 namespace DcInfraSnap\Report;
 
-final class HtmlWriter
+final class HtmlWriter implements Writer
 {
     public function extension(): string
     {
@@ -31,6 +31,15 @@ final class HtmlWriter
     public function contentType(): string
     {
         return 'text/html; charset=utf-8';
+    }
+
+    /**
+     * Shown in the browser rather than downloaded: this is also where it
+     * gets printed to PDF, and Ctrl+S still saves it.
+     */
+    public function isDownload(): bool
+    {
+        return false;
     }
 
     public function write(Document $document): string
@@ -210,6 +219,17 @@ final class HtmlWriter
 
     private function e(string $value): string
     {
+        if (function_exists('mb_scrub')) {
+            $value = mb_scrub($value, 'UTF-8');
+        }
+
+        // What a Fibre Channel device registers about itself is stored
+        // exactly as sent. A stray control byte in a symbolic name is
+        // invisible here but fatal in the Word package, so both writers drop
+        // the same set and the two documents cannot disagree about what the
+        // text is.
+        $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $value) ?? $value;
+
         return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 

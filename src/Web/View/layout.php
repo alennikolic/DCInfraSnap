@@ -3,8 +3,9 @@
 //
 // The frame every page is rendered into: header, menu, language picker.
 //
-// The menu is handed in from index.php. Pages that do not exist yet appear
-// as disabled items rather than as links that lead nowhere.
+// The menu is handed in from index.php, grouped by where the data comes
+// from, and runs down the left side. Pages that do not exist yet appear as
+// disabled items rather than as links that lead nowhere.
 
 /** @var callable $e */
 /** @var callable $t */
@@ -12,7 +13,7 @@
 /** @var string $body */
 /** @var string $appName */
 /** @var bool $isLoggedIn */
-/** @var list<array{path: string, key: string, enabled: bool}> $nav */
+/** @var list<array{key: ?string, items: list<array{path: string, key: string, enabled: bool}>}> $nav */
 /** @var string $currentPath */
 /** @var array<string, string> $languages */
 /** @var string $currentLocale */
@@ -23,6 +24,24 @@ use DcInfraSnap\Web\View;
 
 $csrfToken ??= null;
 $flashes ??= [];
+
+// Which item is highlighted: the longest path that the current one starts
+// with. Worked out once, because a plain "starts with" would light up both
+// /hyperv and /hyperv/vms while looking at a machine.
+$currentItem = '';
+
+foreach ($nav as $group) {
+    foreach ($group['items'] as $item) {
+        $path = $item['path'];
+
+        $isMatch = $path === $currentPath
+            || ($path !== '/' && str_starts_with($currentPath, $path . '/'));
+
+        if ($isMatch && strlen($path) > strlen($currentItem)) {
+            $currentItem = $path;
+        }
+    }
+}
 ?>
 <!doctype html>
 <html lang="<?= $e($locale) ?>">
@@ -67,32 +86,42 @@ $flashes ??= [];
     </div>
 </header>
 
-<?php if ($isLoggedIn): ?>
-    <nav class="mainnav" aria-label="<?= $e($t('nav.overview')) ?>">
-        <div class="mainnav-inner">
-            <?php foreach ($nav as $item): ?>
-                <?php if ($item['enabled']): ?>
-                    <a href="<?= $e($item['path']) ?>"
-                       class="navitem<?= $item['path'] === $currentPath ? ' is-current' : '' ?>">
-                        <?= $e($t($item['key'])) ?>
-                    </a>
-                <?php else: ?>
-                    <span class="navitem is-disabled"><?= $e($t($item['key'])) ?></span>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </div>
-    </nav>
-<?php endif; ?>
+<div class="shell<?= $isLoggedIn ? '' : ' shell-plain' ?>">
 
-<main class="content">
-    <?php if (($flashes ?? []) !== []): ?>
-        <?php foreach ($flashes as $flash): ?>
-            <div class="alert alert-<?= $e($flash['type']) ?>"><?= $e($flash['message']) ?></div>
-        <?php endforeach; ?>
+    <?php if ($isLoggedIn): ?>
+        <nav class="sidenav" aria-label="<?= $e($t('nav.overview')) ?>">
+            <?php foreach ($nav as $group): ?>
+                <div class="navgroup">
+                    <?php if ($group['key'] !== null): ?>
+                        <p class="navgroup-title"><?= $e($t($group['key'])) ?></p>
+                    <?php endif; ?>
+
+                    <?php foreach ($group['items'] as $item): ?>
+                        <?php if ($item['enabled']): ?>
+                            <a href="<?= $e($item['path']) ?>"
+                               class="navitem<?= $item['path'] === $currentItem ? ' is-current' : '' ?>">
+                                <?= $e($t($item['key'])) ?>
+                            </a>
+                        <?php else: ?>
+                            <span class="navitem is-disabled"><?= $e($t($item['key'])) ?></span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
+            <?php endforeach; ?>
+        </nav>
     <?php endif; ?>
 
-    <?= $body ?>
-</main>
+    <main class="content">
+        <?php if (($flashes ?? []) !== []): ?>
+            <?php foreach ($flashes as $flash): ?>
+                <div class="alert alert-<?= $e($flash['type']) ?>"><?= $e($flash['message']) ?></div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
+        <?= $body ?>
+    </main>
+
+</div>
 
 <footer class="footer">
     <span><?= $e($appName) ?></span>
