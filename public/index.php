@@ -32,6 +32,7 @@ use DcInfraSnap\Source\Hyperv\ImportFileRepository;
 use DcInfraSnap\Source\Hyperv\ImportToken;
 use DcInfraSnap\Source\Hyperv\OfflineImporter;
 use DcInfraSnap\Source\Hyperv\OfflineMapper;
+use DcInfraSnap\Source\Hyperv\OfflinePayload;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
@@ -1186,7 +1187,7 @@ if (str_starts_with($route, 'hyperv.')) {
 
         header('Content-Type: text/plain; charset=utf-8');
         header('Content-Disposition: attachment; filename="'
-            . $script->downloadName($integration->name) . '"');
+            . $script->downloadName() . '"');
         header('Content-Length: ' . strlen($contents));
         header('X-Content-Type-Options: nosniff');
 

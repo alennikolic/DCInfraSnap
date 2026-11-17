@@ -73,12 +73,20 @@ final class CollectorScript
         );
     }
 
-    /** What the browser should call the downloaded file. */
-    public function downloadName(string $sourceName): string
+    /**
+     * What the browser should call the downloaded file.
+     *
+     * A fixed name, and not one built from the source's: the page tells the
+     * person to run ".\\dcinfrasnap-hyperv.ps1", and a download called
+     * anything else makes that instruction wrong. The token inside the file
+     * is what ties it to a source, so the name does not have to.
+     *
+     * Downloading the script for a second source into the same folder
+     * therefore lands on the browser's own "(1)" suffix, which is visible
+     * rather than silent.
+     */
+    public function downloadName(): string
     {
-        $slug = strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '-', $sourceName));
-        $slug = trim($slug, '-');
-
-        return 'dcinfrasnap-hyperv' . ($slug === '' ? '' : '-' . $slug) . '.ps1';
+        return 'dcinfrasnap-hyperv.ps1';
     }
 }
