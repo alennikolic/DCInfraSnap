@@ -517,4 +517,50 @@ return [
     'reports.docx_note'     => 'Die Word-Datei hat die Kapitel als echte Überschriften, sodass sie im Navigationsbereich erscheinen, und ein Inhaltsverzeichnis, das Word mit Seitenzahlen füllt. Word fragt beim Öffnen, ob es aktualisiert werden soll: antworten Sie mit Ja.',
     'report.contents_hint'  => 'Aktualisieren Sie dieses Feld in Word, um das Inhaltsverzeichnis zu füllen.',
 
+
+    // =====================================================================
+    // Hyper-V, eine Offline-Quelle
+    // =====================================================================
+    'hyperv.collect'           => 'Erfassen',
+    'hyperv.subtitle'          => 'Hyper-V wird offline erfasst: ein Skript läuft auf jedem Host, und Sie laden hoch, was es schreibt.',
+    'hyperv.not_hyperv'        => ':name ist keine Hyper-V-Quelle.',
+    'hyperv.cannot_collect'    => ':name wird durch das Hochladen einer Datei erfasst, es gibt also nichts einzureihen.',
+
+    'hyperv.script_title'      => '1. Das Erfassungsskript',
+    'hyperv.script_hint'       => 'Auf jedem Knoten des Clusters ausführen, oder auf dem Host, wenn er einzeln steht. Es enthält das Token dieser Quelle, damit eine hochgeladene Datei der richtigen Quelle zugeordnet werden kann.',
+    'hyperv.download_script'   => 'Skript herunterladen',
+    'hyperv.run_command'       => 'Unblock-File .\\dcinfrasnap-hyperv.ps1' . "\n" . 'powershell -ExecutionPolicy Bypass -File .\\dcinfrasnap-hyperv.ps1',
+    'hyperv.script_readonly'   => 'Das Skript liest nur. Es verwendet Get-*-Befehle, braucht eine Eingabeaufforderung als Administrator und kontaktiert keinen anderen Host als den, auf dem es läuft.',
+    'hyperv.script_missing'    => 'Das Skript fehlt in resources/collector/.',
+
+    'hyperv.upload_title'      => '2. Dateien hochladen',
+    'hyperv.upload_hint'       => 'Eine Datei pro Host. Mehrere gleichzeitig sind möglich.',
+    'hyperv.upload_limit'      => 'Bis zu :limit pro Datei.',
+    'hyperv.upload'            => 'Hochladen',
+    'hyperv.upload_nothing'    => 'Es wurde keine Datei hochgeladen.',
+    'hyperv.upload_too_big'    => ':name ist größer als das Limit von :limit.',
+    'hyperv.upload_failed'     => ':name konnte nicht hochgeladen werden.',
+    'hyperv.upload_ok'         => ':count Datei(en) hochgeladen.',
+    'hyperv.token_mismatch'    => ':name wurde für eine andere Quelle erfasst. Laden Sie das Skript bei dieser Quelle herunter und führen Sie dieses aus.',
+    'hyperv.token_manual_note' => ':name wurde mit einem Skript erfasst, das nicht hier heruntergeladen wurde, und konnte dieser Quelle nicht zugeordnet werden. Prüfen Sie, ob es die richtige Umgebung ist.',
+    'hyperv.token_manual'      => 'nicht zugeordnet',
+
+    'hyperv.staged_title'      => '3. Importieren',
+    'hyperv.staged_none'       => 'Es wartet keine Datei auf den Import.',
+    'hyperv.standalone'        => 'einzeln',
+    'hyperv.col_host'          => 'Erfasst auf',
+    'hyperv.col_cluster'       => 'Cluster',
+    'hyperv.col_generated'     => 'Erzeugt',
+    'hyperv.col_machines'      => 'Maschinen',
+    'hyperv.col_script'        => 'Skript',
+    'hyperv.col_size'          => 'Größe',
+    'hyperv.discarded'         => 'Die Datei von :name wurde entfernt.',
+    'hyperv.import'            => 'Importieren',
+    'hyperv.imported'          => 'Lauf :run endete als :status, :changed Objekt(e) neu oder geändert.',
+    'hyperv.missing_nodes'     => 'Für :nodes gibt es keine Datei.',
+    'hyperv.missing_nodes_hint'=> 'Ein Knoten meldet nur seine eigenen Maschinen; ein Import ohne ihn würde diese Maschinen als verschwunden erfassen.',
+    'hyperv.missing_blocked'   => 'Für :nodes gibt es keine Datei. Erfassen Sie sie, oder setzen Sie das Häkchen, um trotzdem zu importieren.',
+    'hyperv.force'             => 'Trotzdem importieren und die Maschinen der fehlenden Knoten als verschwunden erfassen',
+    'hyperv.last_import'       => 'Zuletzt importiert :at als Lauf :run.',
+
 ];

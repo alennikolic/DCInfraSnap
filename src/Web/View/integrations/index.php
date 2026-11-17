@@ -109,7 +109,11 @@ $state = static function (?bool $ok) use ($e, $t): string {
                     </td>
 
                     <td class="actions">
-                        <?php if ($i->isActive): ?>
+                        <?php if ($i->isHyperV()): ?>
+                            <a href="/integrations/<?= (int) $i->id ?>/hyperv" class="btn btn-small btn-primary">
+                                <?= $e($t('hyperv.collect')) ?>
+                            </a>
+                        <?php elseif ($i->isActive): ?>
                             <form method="post" action="/integrations/<?= (int) $i->id ?>/collect" class="inline">
                                 <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
                                 <button type="submit" class="btn btn-small btn-primary btn-inline">
@@ -118,20 +122,24 @@ $state = static function (?bool $ok) use ($e, $t): string {
                             </form>
                         <?php endif; ?>
 
-                        <form method="post" action="/integrations/<?= (int) $i->id ?>/test" class="inline">
-                            <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
-                            <button type="submit" class="btn btn-small">
-                                <?= $e($t('integrations.test')) ?>
-                            </button>
-                        </form>
+                        <?php if (!$i->isOffline()): ?>
+                            <form method="post" action="/integrations/<?= (int) $i->id ?>/test" class="inline">
+                                <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">
+                                <button type="submit" class="btn btn-small">
+                                    <?= $e($t('integrations.test')) ?>
+                                </button>
+                            </form>
+                        <?php endif; ?>
 
                         <a href="/integrations/<?= (int) $i->id ?>/edit" class="btn btn-small">
                             <?= $e($t('common.edit')) ?>
                         </a>
 
-                        <a href="/integrations/<?= (int) $i->id ?>/password" class="btn btn-small">
-                            <?= $e($t('integrations.change_password')) ?>
-                        </a>
+                        <?php if (!$i->isOffline()): ?>
+                            <a href="/integrations/<?= (int) $i->id ?>/password" class="btn btn-small">
+                                <?= $e($t('integrations.change_password')) ?>
+                            </a>
+                        <?php endif; ?>
 
                         <form method="post" action="/integrations/<?= (int) $i->id ?>/toggle" class="inline">
                             <input type="hidden" name="csrf_token" value="<?= $e($csrfToken) ?>">

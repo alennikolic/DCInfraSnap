@@ -16,6 +16,8 @@ use DcInfraSnap\I18n\Translator;
 use DcInfraSnap\Integration\Integration;
 use DcInfraSnap\Integration\IntegrationRepository;
 use DcInfraSnap\Inventory\InventoryQuery;
+use DcInfraSnap\Inventory\InventoryRepository;
+use DcInfraSnap\Inventory\RawObjectRepository;
 use DcInfraSnap\Inventory\ObjectType;
 use DcInfraSnap\Project\ProjectRepository;
 use DcInfraSnap\Report\DocxWriter;
@@ -24,6 +26,12 @@ use DcInfraSnap\Report\ReportBuilder;
 use DcInfraSnap\Report\ReportQuery;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
+use DcInfraSnap\Source\Hyperv\CollectorScript;
+use DcInfraSnap\Source\Hyperv\HypervException;
+use DcInfraSnap\Source\Hyperv\ImportFileRepository;
+use DcInfraSnap\Source\Hyperv\ImportToken;
+use DcInfraSnap\Source\Hyperv\OfflineImporter;
+use DcInfraSnap\Source\Hyperv\OfflineMapper;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 use DcInfraSnap\Web\Auth;
@@ -212,6 +220,15 @@ if ($path === '/') {
 } elseif (preg_match('#^/integrations/(\d+)/(edit|password|delete|test|toggle|collect)$#', $path, $m) === 1) {
     $route = 'integrations.' . $m[2];
     $id    = (int) $m[1];
+} elseif (preg_match('#^/integrations/(\d+)/(hyperv|script|upload|import)$#', $path, $m) === 1) {
+    // The offline source's own page and its three actions. Separate from the
+    // group above because none of them is about a connection.
+    $route = 'hyperv.' . $m[2];
+    $id    = (int) $m[1];
+} elseif (preg_match('#^/integrations/(\d+)/staged/(\d+)/discard$#', $path, $m) === 1) {
+    $route    = 'hyperv.discard';
+    $id       = (int) $m[1];
+    $stagedId = (int) $m[2];
 } elseif ($path === '/projects') {
     $route = 'projects.index';
 } elseif ($path === '/projects/add') {
@@ -252,7 +269,8 @@ if ($route === null) {
 
 // Actions that change something are POST only, so they cannot be triggered
 // by a link, a prefetch or an image tag.
-if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect', 'runs.reset'], true)
+if (in_array($route, ['integrations.test', 'integrations.toggle', 'integrations.collect', 'runs.reset',
+                      'hyperv.upload', 'hyperv.import', 'hyperv.discard'], true)
     && $method !== 'POST') {
     $respond($view->render('error', [
         'title'   => $translator->t('error.not_found'),
@@ -269,6 +287,7 @@ if ($method === 'POST' && !$auth->csrfValid($_POST['csrf_token'] ?? null)) {
     $redirect(match (true) {
         str_starts_with($route, 'projects.') => '/projects',
         str_starts_with($route, 'reports.')  => '/reports',
+        str_starts_with($route, 'hyperv.')   => '/integrations/' . $id . '/hyperv',
         default                              => '/integrations',
     });
 }
@@ -1111,6 +1130,14 @@ if ($route === 'integrations.test') {
 // minutes, which would outlast the web request — and a browser tab is a poor
 // place to hold a job that must not be interrupted.
 if ($route === 'integrations.collect') {
+    // An offline source is collected by uploading a file, so there is
+    // nothing to queue. Said plainly rather than queueing a run that would
+    // fail in the worker with a connection error.
+    if ($integration->isOffline()) {
+        Flash::error($translator->t('hyperv.cannot_collect', ['name' => $integration->name]));
+        $redirect('/integrations/' . $integration->id . '/hyperv');
+    }
+
     $runs = new RunRepository($pdo);
 
     try {
@@ -1125,6 +1152,230 @@ if ($route === 'integrations.collect') {
     }
 
     $redirect('/integrations');
+}
+
+// =======================================================================
+// Hyper-V: an offline source
+//
+// Download the script, upload what it produced on each host, import the set.
+// None of this talks to the hosts, so there is no connection to test and no
+// credential to hold — the three actions are the whole of collecting here.
+// =======================================================================
+if (str_starts_with($route, 'hyperv.')) {
+    if (!$integration->isHyperV()) {
+        Flash::error($translator->t('hyperv.not_hyperv', ['name' => $integration->name]));
+        $redirect('/integrations');
+    }
+
+    $script     = new CollectorScript((string) $config['root']);
+    $importFile = new ImportFileRepository($pdo, (string) $config['import_dir']);
+    $hypervPage = '/integrations/' . $integration->id . '/hyperv';
+
+    // --- Download the script ------------------------------------------
+    //
+    // Streamed with the source's token already in it. Sent as an attachment
+    // with a name the person can recognise on the host, where several of
+    // these may end up side by side.
+    if ($route === 'hyperv.script') {
+        try {
+            $contents = $script->forIntegration($integration->id, (string) $config['secret_key']);
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Content-Disposition: attachment; filename="'
+            . $script->downloadName($integration->name) . '"');
+        header('Content-Length: ' . strlen($contents));
+        header('X-Content-Type-Options: nosniff');
+
+        echo $contents;
+        exit;
+    }
+
+    // --- Upload ---------------------------------------------------------
+    if ($route === 'hyperv.upload') {
+        $files = $_FILES['collector_file'] ?? null;
+
+        if (!is_array($files) || !isset($files['name']) || !is_array($files['name'])) {
+            Flash::error($translator->t('hyperv.upload_nothing'));
+            $redirect($hypervPage);
+        }
+
+        $accepted = 0;
+
+        foreach (array_keys($files['name']) as $index) {
+            $name  = (string) $files['name'][$index];
+            $error = (int) $files['error'][$index];
+            $tmp   = (string) $files['tmp_name'][$index];
+
+            if ($error === UPLOAD_ERR_NO_FILE) {
+                continue;
+            }
+
+            // A file larger than the limit arrives as an error code, not as a
+            // short file, so the limit is named rather than left to guess.
+            if ($error === UPLOAD_ERR_INI_SIZE || $error === UPLOAD_ERR_FORM_SIZE) {
+                Flash::error($translator->t('hyperv.upload_too_big', [
+                    'name'  => $name,
+                    'limit' => (string) ini_get('upload_max_filesize'),
+                ]));
+                continue;
+            }
+
+            if ($error !== UPLOAD_ERR_OK || !is_uploaded_file($tmp)) {
+                Flash::error($translator->t('hyperv.upload_failed', ['name' => $name]));
+                continue;
+            }
+
+            try {
+                $payload = OfflinePayload::fromFile($tmp);
+
+                // The token says which source the file was collected for.
+                // Without this check the likeliest mistake — uploading the
+                // lab cluster into the production source — goes unnoticed,
+                // because two clusters look alike in a file.
+                if (!ImportToken::matches(
+                    $payload->sourceToken(),
+                    $integration->id,
+                    (string) $config['secret_key']
+                )) {
+                    Flash::error($translator->t('hyperv.token_mismatch', ['name' => $name]));
+                    continue;
+                }
+
+                if (ImportToken::isManual($payload->sourceToken())) {
+                    Flash::info($translator->t('hyperv.token_manual_note', ['name' => $name]));
+                }
+
+                $importFile->stage($integration->id, $tmp, $name);
+                $accepted++;
+            } catch (Throwable $e) {
+                Flash::error($name . ': ' . $e->getMessage());
+            }
+        }
+
+        if ($accepted > 0) {
+            Flash::success($translator->t('hyperv.upload_ok', ['count' => (string) $accepted]));
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- Throw one staged file away -------------------------------------
+    if ($route === 'hyperv.discard') {
+        $file = $importFile->find($stagedId ?? 0);
+
+        if ($file !== null && (int) $file['integration_id'] === $integration->id) {
+            $importFile->discard((int) $file['id']);
+            Flash::success($translator->t('hyperv.discarded', ['name' => (string) $file['collector_host']]));
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- Import the set -------------------------------------------------
+    if ($route === 'hyperv.import') {
+        try {
+            $payloads = $importFile->stagedPayloads($integration->id);
+
+            if ($payloads === []) {
+                Flash::error($translator->t('hyperv.staged_none'));
+                $redirect($hypervPage);
+            }
+
+            $mapper = new OfflineMapper($payloads);
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        $missing = $mapper->missingNodes();
+        $force   = isset($_POST['force']);
+
+        if ($missing !== [] && !$force) {
+            Flash::error($translator->t('hyperv.missing_blocked', [
+                'nodes' => implode(', ', $missing),
+            ]));
+            $redirect($hypervPage);
+        }
+
+        $runs = new RunRepository($pdo);
+
+        try {
+            // startDirect, not queue: the files are already here, so there is
+            // nothing for the worker to wait for. The lock is the same either
+            // way — active_lock refuses a second concurrent run on insert.
+            $runId = $runs->startDirect($integration->id, 'gui');
+        } catch (Throwable $e) {
+            Flash::error($e->getMessage());
+            $redirect($hypervPage);
+        }
+
+        $importer = new OfflineImporter(
+            new RawObjectRepository($pdo),
+            new InventoryRepository($pdo),
+            $runs,
+        );
+
+        try {
+            $result = $importer->import($integration, $runId, $mapper);
+
+            // Only once the rows are in: a file marked imported whose import
+            // failed is a file nobody will think to upload again.
+            $importFile->markImported($integration->id, $runId);
+
+            $counts = 0;
+
+            foreach ($result['types'] as $type) {
+                $counts += $type['changed'];
+            }
+
+            Flash::success($translator->t('hyperv.imported', [
+                'run'     => (string) $runId,
+                'status'  => $result['status'],
+                'changed' => (string) $counts,
+            ]));
+        } catch (Throwable $e) {
+            $runs->finish($runId, 'failed', 0, $e->getMessage());
+            Flash::error($e->getMessage());
+        }
+
+        $redirect($hypervPage);
+    }
+
+    // --- The page -------------------------------------------------------
+    $staged   = $importFile->staged($integration->id);
+    $problems = [];
+    $missing  = [];
+    $notes    = [];
+
+    if ($staged !== []) {
+        try {
+            $mapper  = new OfflineMapper($importFile->stagedPayloads($integration->id));
+            $missing = $mapper->missingNodes();
+            $notes   = $mapper->warnings();
+        } catch (HypervException $e) {
+            // The set cannot be imported as it stands — two clusters, two
+            // files from one host, a payload gone from disk. Said here so the
+            // Import button is not offered at all.
+            $problems[] = $e->getMessage();
+        } catch (Throwable $e) {
+            $problems[] = $e->getMessage();
+        }
+    }
+
+    $respond($view->render('integrations/hyperv', [
+        'integration'     => $integration,
+        'staged'          => $staged,
+        'missingNodes'    => $missing,
+        'problems'        => $problems,
+        'notes'           => $notes,
+        'lastImported'    => $importFile->lastImported($integration->id),
+        'uploadLimit'     => (string) ini_get('upload_max_filesize'),
+        'scriptAvailable' => $script->exists(),
+    ]));
 }
 
 // --- Enable / disable --------------------------------------------------

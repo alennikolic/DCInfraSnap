@@ -515,4 +515,50 @@ return [
     'reports.docx_note'     => 'Word fajl ima poglavlja kao prave naslove, pa se vide u navigation pane-u, i sadržaj koji Word popunjava brojevima strana. Word pri otvaranju pita da ga osveži: odgovorite sa da.',
     'report.contents_hint'  => 'Osvežite ovo polje u Wordu da se sadržaj popuni.',
 
+
+    // =====================================================================
+    // Hyper-V, offline izvor
+    // =====================================================================
+    'hyperv.collect'           => 'Prikupi',
+    'hyperv.subtitle'          => 'Hyper-V se prikuplja offline: skript se pusti na svakom hostu, a vi uploadujete to što napiše.',
+    'hyperv.not_hyperv'        => ':name nije Hyper-V izvor.',
+    'hyperv.cannot_collect'    => ':name se prikuplja uploadom fajla, pa nema šta da se stavi u red.',
+
+    'hyperv.script_title'      => '1. Skript za prikupljanje',
+    'hyperv.script_hint'       => 'Pustite ga na svakom nodu klastera, ili na hostu ako je samostalan. Nosi token ovog izvora, da bi uploadovani fajl mogao da se poveže sa pravim izvorom.',
+    'hyperv.download_script'   => 'Preuzmi skript',
+    'hyperv.run_command'       => 'Unblock-File .\\dcinfrasnap-hyperv.ps1' . "\n" . 'powershell -ExecutionPolicy Bypass -File .\\dcinfrasnap-hyperv.ps1',
+    'hyperv.script_readonly'   => 'Skript samo čita. Koristi Get-* komande, traži elevated prompt, i ne kontaktira ni jedan host osim onog na kom se izvršava.',
+    'hyperv.script_missing'    => 'Skript ne postoji u resources/collector/.',
+
+    'hyperv.upload_title'      => '2. Upload fajlova',
+    'hyperv.upload_hint'       => 'Jedan fajl po hostu. Može i više odjednom.',
+    'hyperv.upload_limit'      => 'Najviše :limit po fajlu.',
+    'hyperv.upload'            => 'Uploaduj',
+    'hyperv.upload_nothing'    => 'Nije uploadovan ni jedan fajl.',
+    'hyperv.upload_too_big'    => ':name je veći od ograničenja :limit.',
+    'hyperv.upload_failed'     => ':name nije mogao da se uploaduje.',
+    'hyperv.upload_ok'         => 'Uploadovano fajlova: :count.',
+    'hyperv.token_mismatch'    => ':name je prikupljen za drugi izvor. Preuzmite skript sa ovog izvora i pustite njega.',
+    'hyperv.token_manual_note' => ':name je prikupljen skriptom koja nije preuzeta odavde, pa nije mogao da se poveže sa ovim izvorom. Proverite da je to pravo okruženje.',
+    'hyperv.token_manual'      => 'nije povezan',
+
+    'hyperv.staged_title'      => '3. Import',
+    'hyperv.staged_none'       => 'Ni jedan fajl ne čeka na import.',
+    'hyperv.standalone'        => 'samostalan',
+    'hyperv.col_host'          => 'Prikupljeno na',
+    'hyperv.col_cluster'       => 'Klaster',
+    'hyperv.col_generated'     => 'Generisano',
+    'hyperv.col_machines'      => 'Mašine',
+    'hyperv.col_script'        => 'Skript',
+    'hyperv.col_size'          => 'Veličina',
+    'hyperv.discarded'         => 'Fajl sa :name je uklonjen.',
+    'hyperv.import'            => 'Importuj',
+    'hyperv.imported'          => 'Run :run je završio kao :status, novih ili izmenjenih objekata: :changed.',
+    'hyperv.missing_nodes'     => 'Nema fajla za :nodes.',
+    'hyperv.missing_nodes_hint'=> 'Nod prijavljuje samo svoje mašine, pa bi import bez njega te mašine upisao kao nestale.',
+    'hyperv.missing_blocked'   => 'Nema fajla za :nodes. Prikupite ih, ili označite kućicu da se ipak importuje.',
+    'hyperv.force'             => 'Importuj ipak, i upiši mašine sa nepokrivenih nodova kao nestale',
+    'hyperv.last_import'       => 'Zadnji import :at, run :run.',
+
 ];

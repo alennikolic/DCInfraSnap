@@ -510,4 +510,50 @@ return [
     'reports.docx_note'     => 'The Word file has the chapters as real headings, so they appear in the navigation pane, and a table of contents Word fills in with page numbers. Word asks to update it when the document opens: answer yes.',
     'report.contents_hint'  => 'Update this field in Word to fill in the contents.',
 
+
+    // =====================================================================
+    // Hyper-V, an offline source
+    // =====================================================================
+    'hyperv.collect'           => 'Collect',
+    'hyperv.subtitle'          => 'Hyper-V is collected offline: a script runs on each host and you upload what it writes.',
+    'hyperv.not_hyperv'        => ':name is not a Hyper-V source.',
+    'hyperv.cannot_collect'    => ':name is collected by uploading a file, so there is nothing to queue.',
+
+    'hyperv.script_title'      => '1. The collector script',
+    'hyperv.script_hint'       => 'Run it on every node of the cluster, or on the host when it is standalone. It carries this source\'s token, so an uploaded file can be matched to the right source.',
+    'hyperv.download_script'   => 'Download script',
+    'hyperv.run_command'       => 'Unblock-File .\\dcinfrasnap-hyperv.ps1' . "\n" . 'powershell -ExecutionPolicy Bypass -File .\\dcinfrasnap-hyperv.ps1',
+    'hyperv.script_readonly'   => 'The script only reads. It uses Get-* commands, needs an elevated prompt, and never contacts any host other than the one it runs on.',
+    'hyperv.script_missing'    => 'The script is missing from resources/collector/.',
+
+    'hyperv.upload_title'      => '2. Upload the files',
+    'hyperv.upload_hint'       => 'One file per host. Several at once is fine.',
+    'hyperv.upload_limit'      => 'Up to :limit per file.',
+    'hyperv.upload'            => 'Upload',
+    'hyperv.upload_nothing'    => 'No file was uploaded.',
+    'hyperv.upload_too_big'    => ':name is larger than the :limit limit.',
+    'hyperv.upload_failed'     => ':name could not be uploaded.',
+    'hyperv.upload_ok'         => ':count file(s) uploaded.',
+    'hyperv.token_mismatch'    => ':name was collected for a different source. Download the script from this source and run that.',
+    'hyperv.token_manual_note' => ':name was collected with a script that was not downloaded from here, so it could not be matched to this source. Check that it is the right environment.',
+    'hyperv.token_manual'      => 'not matched',
+
+    'hyperv.staged_title'      => '3. Import',
+    'hyperv.staged_none'       => 'No file is waiting to be imported.',
+    'hyperv.standalone'        => 'standalone',
+    'hyperv.col_host'          => 'Collected on',
+    'hyperv.col_cluster'       => 'Cluster',
+    'hyperv.col_generated'     => 'Generated',
+    'hyperv.col_machines'      => 'Machines',
+    'hyperv.col_script'        => 'Script',
+    'hyperv.col_size'          => 'Size',
+    'hyperv.discarded'         => 'The file from :name was removed.',
+    'hyperv.import'            => 'Import',
+    'hyperv.imported'          => 'Run :run finished as :status, :changed object(s) new or changed.',
+    'hyperv.missing_nodes'     => 'There is no file for :nodes.',
+    'hyperv.missing_nodes_hint'=> 'A node reports only its own machines, so importing without it would record those machines as gone.',
+    'hyperv.missing_blocked'   => 'There is no file for :nodes. Collect them, or tick the box to import anyway.',
+    'hyperv.force'             => 'Import anyway, and record the machines of the missing nodes as gone',
+    'hyperv.last_import'       => 'Last imported :at as run :run.',
+
 ];
