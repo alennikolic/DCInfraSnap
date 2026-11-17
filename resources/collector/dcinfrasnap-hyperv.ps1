@@ -41,7 +41,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.0.0'
+$ScriptVersion = '1.0.1'
 $SchemaVersion = 1
 
 # DCInfraSnap replaces this placeholder with the integration token on download.
@@ -124,15 +124,25 @@ function Get-MacAddress {
     return ($parts -join ':')
 }
 
-function Get-StringList {
-    # Always an ArrayList so ConvertTo-Json emits a JSON array, even for one item.
+function Get-JoinedList {
+    <#
+        A comma separated string, never an array.
+
+        Version 1.0.0 returned an ArrayList here, and PowerShell unrolled it
+        on the way out of the function: a list of two came back as an array,
+        a list of one came back as a bare string, and an empty list came back
+        as an empty object. The same field therefore had three different JSON
+        shapes in one file, which no parser should have to guess at. A string
+        cannot be unrolled, so this returns one and the importer splits it.
+    #>
     param($Value)
-    $list = New-Object System.Collections.ArrayList
-    if ($null -eq $Value) { return $list }
+    if ($null -eq $Value) { return '' }
+    $parts = New-Object System.Collections.ArrayList
     foreach ($item in @($Value)) {
-        if ($null -ne $item -and ([string]$item).Length -gt 0) { [void]$list.Add([string]$item) }
+        if ($null -ne $item -and ([string]$item).Length -gt 0) { [void]$parts.Add([string]$item) }
     }
-    return $list
+    if ($parts.Count -eq 0) { return '' }
+    return ($parts -join ',')
 }
 
 function Invoke-Step {
@@ -377,8 +387,16 @@ foreach ($nic in $netAdapters) {
     $ips   = New-Object System.Collections.ArrayList
     if ($alias -and $ipByInterface.ContainsKey($alias)) { $ips = $ipByInterface[$alias] }
 
+    # Get-NetAdapter reports the management OS side of a Hyper-V virtual
+    # adapter as an adapter of its own, named "vEthernet (<name>)". It is the
+    # same object the host_vnics list describes from the Hyper-V side, so it
+    # is labelled as such here and the importer does not have to guess which
+    # rows are real hardware.
+    $nicKind = 'pnic'
+    if (Get-BoolValue (Get-Prop $nic 'Virtual')) { $nicKind = 'host_nic_os' }
+
     [void]$nicList.Add([ordered]@{
-        kind                  = 'pnic'
+        kind                  = $nicKind
         name                  = $alias
         interface_description = Get-StringValue (Get-Prop $nic 'InterfaceDescription')
         interface_index       = Get-IntValue    (Get-Prop $nic 'InterfaceIndex')
@@ -407,7 +425,7 @@ foreach ($team in $teams) {
         load_balancing    = Get-StringValue (Get-Prop $team 'LoadBalancingAlgorithm')
         status            = Get-StringValue (Get-Prop $team 'Status')
         lacp_timer        = Get-StringValue (Get-Prop $team 'LacpTimer')
-        members           = Get-StringList  (Get-Prop $team 'Members')
+        members           = Get-JoinedList  (Get-Prop $team 'Members')
     })
 }
 
@@ -439,7 +457,7 @@ foreach ($sw in $switches) {
         default_flow_min_bandwidth_absolute = Get-LongValue (Get-Prop $sw 'DefaultFlowMinimumBandwidthAbsolute')
         default_flow_min_bandwidth_weight   = Get-LongValue (Get-Prop $sw 'DefaultFlowMinimumBandwidthWeight')
         net_adapter_interface_description   = Get-StringValue (Get-Prop $sw 'NetAdapterInterfaceDescription')
-        net_adapter_interface_descriptions  = Get-StringList  (Get-Prop $sw 'NetAdapterInterfaceDescriptions')
+        net_adapter_interface_descriptions  = Get-JoinedList  (Get-Prop $sw 'NetAdapterInterfaceDescriptions')
         packet_direct_enabled       = Get-BoolValue   (Get-Prop $sw 'PacketDirectEnabled')
         team_teaming_mode           = Get-StringValue (Get-Prop $st 'TeamingMode')
         team_load_balancing         = Get-StringValue (Get-Prop $st 'LoadBalancingAlgorithm')
@@ -474,9 +492,9 @@ foreach ($vnic in $hostVnics) {
         vlan_mode         = Get-StringValue (Get-Prop $vlan 'OperationMode')
         vlan_access_id    = Get-IntValue    (Get-Prop $vlan 'AccessVlanId')
         vlan_native_id    = Get-IntValue    (Get-Prop $vlan 'NativeVlanId')
-        vlan_allowed_list = Get-StringList  (Get-Prop $vlan 'AllowedVlanIdList')
+        vlan_allowed_list = Get-JoinedList  (Get-Prop $vlan 'AllowedVlanIdList')
         ip_addresses      = $ips
-        reported_ips      = Get-StringList  (Get-Prop $vnic 'IPAddresses')
+        reported_ips      = Get-JoinedList  (Get-Prop $vnic 'IPAddresses')
     })
 }
 
@@ -779,12 +797,12 @@ foreach ($vm in $vms) {
                 vlan_mode               = Get-StringValue (Get-Prop $vlan 'OperationMode')
                 vlan_access_id          = Get-IntValue    (Get-Prop $vlan 'AccessVlanId')
                 vlan_native_id          = Get-IntValue    (Get-Prop $vlan 'NativeVlanId')
-                vlan_allowed_list       = Get-StringList  (Get-Prop $vlan 'AllowedVlanIdList')
+                vlan_allowed_list       = Get-JoinedList  (Get-Prop $vlan 'AllowedVlanIdList')
                 vlan_primary_id         = Get-IntValue    (Get-Prop $vlan 'PrimaryVlanId')
                 isolation_mode          = Get-StringValue (Get-Prop $isolation 'IsolationMode')
                 isolation_vlan_id       = Get-IntValue    (Get-Prop $isolation 'DefaultIsolationID')
                 allow_untagged          = Get-BoolValue   (Get-Prop $isolation 'AllowUntaggedTraffic')
-                ip_addresses            = Get-StringList  (Get-Prop $adapter 'IPAddresses')
+                ip_addresses            = Get-JoinedList  (Get-Prop $adapter 'IPAddresses')
             })
         }
     } catch {
