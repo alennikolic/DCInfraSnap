@@ -31,7 +31,7 @@ use DcInfraSnap\Web\Format;
 </div>
 
 <div class="panel">
-    <table>
+    <table class="table-facts">
         <tbody>
             <tr><th><?= $e($t('hv.fqdn')) ?></th><td class="data"><?= $e((string) $node['fqdn']) ?></td></tr>
             <tr><th><?= $e($t('hv.hardware')) ?></th>

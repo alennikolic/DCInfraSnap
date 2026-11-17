@@ -43,7 +43,7 @@ $replicated = $machine['replication_state'] !== null
 </div>
 
 <div class="panel">
-    <table>
+    <table class="table-facts">
         <tbody>
             <tr><th><?= $e($t('hv.status')) ?></th><td><?= $e((string) $machine['vm_status']) ?></td></tr>
             <tr><th><?= $e($t('hv.generation')) ?></th>
@@ -252,7 +252,7 @@ $replicated = $machine['replication_state'] !== null
 <?php if ($replicated): ?>
     <div class="panel">
         <h2><?= $e($t('hv.replication')) ?></h2>
-        <table>
+        <table class="table-facts">
             <tbody>
                 <tr><th><?= $e($t('common.status')) ?></th>
                     <td><?= $e((string) $machine['replication_state']) ?>

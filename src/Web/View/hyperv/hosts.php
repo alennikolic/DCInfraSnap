@@ -41,7 +41,7 @@ use DcInfraSnap\Web\Format;
             <h2><?= $e((string) $cluster['name']) ?></h2>
             <p class="muted"><?= $e((string) $cluster['integration_name']) ?></p>
 
-            <table>
+            <table class="table-facts">
                 <tbody>
                     <tr>
                         <th><?= $e($t('hv.quorum')) ?></th>

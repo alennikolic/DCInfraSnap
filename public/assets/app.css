@@ -719,8 +719,11 @@ tr.is-inactive td {
 
 .detail-grid .panel { margin-bottom: 0; }
 
-.table-detail th {
-    width: 45%;
+/* Key and value, side by side. Without a thead the browser falls back to
+   its own th styling — bold and centred — which is why these need a class
+   even though they are plain tables. */
+.table-detail th,
+.table-facts th {
     padding: 6px 10px 6px 0;
     text-align: left;
     font-weight: 500;
@@ -729,16 +732,35 @@ tr.is-inactive td {
     border-bottom: 1px solid var(--panel-border);
     text-transform: none;
     letter-spacing: 0;
+    vertical-align: top;
 }
 
-.table-detail td {
+/* .table-detail sits in a .detail-grid column, where a proportional label
+   column tracks the panel. .table-facts is the same table in a panel the
+   width of the page, where 45% would leave a gap you could park a bus in. */
+.table-detail th { width: 45%; }
+
+.table-facts th  {
+    width: 210px;
+    white-space: nowrap;
+}
+
+.table-detail td,
+.table-facts td {
     padding: 6px 0;
     font-size: 13.5px;
     border-bottom: 1px solid var(--panel-border);
+    vertical-align: top;
 }
 
 .table-detail tr:last-child th,
-.table-detail tr:last-child td { border-bottom: none; }
+.table-detail tr:last-child td,
+.table-facts tr:last-child th,
+.table-facts tr:last-child td { border-bottom: none; }
+
+/* A second heading inside one panel: without this it sits on the last row
+   of the table above it. */
+.panel table + h3 { margin-top: 20px; }
 
 .notes {
     margin: 0;
