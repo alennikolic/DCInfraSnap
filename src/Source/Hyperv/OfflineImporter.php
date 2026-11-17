@@ -77,10 +77,13 @@ final class OfflineImporter
         // Partial, not failed, when some types went through: the same rule the
         // vCenter collector follows. A host that went in is usable even if
         // the machines on another one did not.
+        // 'success', not 'ok': RunRepository::finish() takes the three
+        // values discovery_run.status allows, and 'ok' is what a single type
+        // reports, not what a run ends as.
         $status = match (true) {
-            $failed === []                       => 'ok',
-            count($failed) === count($results)   => 'failed',
-            default                              => 'partial',
+            $failed === []                     => 'success',
+            count($failed) === count($results) => 'failed',
+            default                            => 'partial',
         };
 
         $this->runs->finish($runId, $status, 0, self::firstError($results));

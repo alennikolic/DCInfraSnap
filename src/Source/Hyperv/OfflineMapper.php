@@ -253,7 +253,11 @@ final class OfflineMapper
     /**
      * Rows per object type, keyed by the ObjectType key.
      *
-     * The shape is what sync() takes: a list of ['moref' => …, 'fields' => …].
+     * The shape is what both writers take: 'fields' is what sync() compares
+     * and stores, and 'raw' is what the collector reported for that object,
+     * which RawObjectRepository keeps verbatim. Keeping the payload is the
+     * point of the raw layer: a field that turns out to matter in six months
+     * can be extracted from runs already collected.
      *
      * @return array<string, list<array{moref: string, fields: array<string, scalar|null>}>>
      */
@@ -319,6 +323,7 @@ final class OfflineMapper
 
         return [[
             'moref'  => $moref,
+            'raw'    => $cluster,
             'fields' => [
                 'name'                => OfflinePayload::text($cluster['name'] ?? null),
                 'domain'              => OfflinePayload::text($cluster['domain'] ?? null),
@@ -346,6 +351,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'net:' . $guid,
+                'raw'    => $network,
                 'fields' => [
                     'cluster_moref' => $clusterMoref,
                     'name'          => OfflinePayload::text($network['name'] ?? null),
@@ -376,6 +382,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'csv:' . $guid,
+                'raw'    => $csv,
                 'fields' => [
                     'cluster_moref'     => $clusterMoref,
                     'name'              => OfflinePayload::text($csv['name'] ?? null),
@@ -416,6 +423,7 @@ final class OfflineMapper
 
         return [
             'moref'  => $moref,
+            'raw'    => $node,
             'fields' => [
                 'hostname'                  => OfflinePayload::text($node['hostname'] ?? null),
                 'fqdn'                      => OfflinePayload::text($node['fqdn'] ?? null),
@@ -500,6 +508,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'dev:' . $nodeMoref . ':' . $kind . ':' . $key,
+                'raw'    => $device,
                 'fields' => [
                     'node_moref'            => $nodeMoref,
                     'kind'                  => $kind,
@@ -545,6 +554,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'dev:' . $nodeMoref . ':host_vnic:' . $key,
+                'raw'    => $vnic,
                 'fields' => [
                     'node_moref'            => $nodeMoref,
                     'kind'                  => 'host_vnic',
@@ -586,6 +596,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'dev:' . $nodeMoref . ':team:' . strtolower($name),
+                'raw'    => $team,
                 'fields' => [
                     'node_moref'            => $nodeMoref,
                     'kind'                  => 'team',
@@ -633,6 +644,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'vswitch:' . $nodeMoref . ':' . $guid,
+                'raw'    => $switch,
                 'fields' => [
                     'node_moref'                 => $nodeMoref,
                     'name'                       => OfflinePayload::text($switch['name'] ?? null),
@@ -698,6 +710,7 @@ final class OfflineMapper
 
         return [
             'moref'  => $moref,
+            'raw'    => $vm,
             'fields' => [
                 'name'                         => OfflinePayload::text($vm['name'] ?? null),
                 'vm_state'                     => OfflinePayload::text($vm['state'] ?? null),
@@ -803,6 +816,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => sprintf('disk:%s:%s:%d:%d', $vmMoref, strtolower($controller), $number, $location),
+                'raw'    => $disk,
                 'fields' => [
                     'vm_moref'             => $vmMoref,
                     'controller_type'      => $controller,
@@ -853,6 +867,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => $moref,
+                'raw'    => $nic,
                 'fields' => [
                     'vm_moref'               => $vmMoref,
                     'name'                   => OfflinePayload::text($nic['name'] ?? null),
@@ -909,6 +924,7 @@ final class OfflineMapper
 
             $out[] = [
                 'moref'  => 'cp:' . $guid,
+                'raw'    => $checkpoint,
                 'fields' => [
                     'vm_moref'                => $vmMoref,
                     'name'                    => OfflinePayload::text($checkpoint['name'] ?? null),
