@@ -1169,7 +1169,7 @@ if (str_starts_with($route, 'hyperv.')) {
     }
 
     $script     = new CollectorScript((string) $config['root']);
-    $importFile = new ImportFileRepository($pdo, (string) $config['import_dir']);
+    $importFile = new ImportFileRepository($pdo);
     $hypervPage = '/integrations/' . $integration->id . '/hyperv';
 
     // --- Download the script ------------------------------------------

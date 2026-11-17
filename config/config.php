@@ -40,11 +40,6 @@ return [
     'lang_dir'       => $root . '/lang',
     'views_dir'      => $root . '/src/Web/View',
 
-    // Uploaded Hyper-V collector files wait here until the set is complete.
-    // Inside the repository because the whole of it is already mounted into
-    // the containers; the folder is gitignored, not committed.
-    'import_dir'     => $root . '/storage/import',
-
     // --- Language -----------------------------------------------------
     // The default locale, and the one every other locale falls back to for
     // strings it has not translated. English stays the fallback: it is the
