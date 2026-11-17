@@ -168,37 +168,71 @@ p { margin: 0 0 10px; }
     background: rgba(255, 255, 255, 0.14);
 }
 
-/* --- Main navigation -------------------------------------------------- */
+/* --- Main navigation, down the left side ------------------------------ */
 
-.mainnav {
-    background: var(--panel);
-    border-bottom: 1px solid var(--panel-border);
+/* The menu and the page sit side by side, so the groups stay visible while
+   a long table scrolls. The sidebar scrolls on its own when it is taller
+   than the window rather than pushing the page down. */
+.shell {
+    display: flex;
+    align-items: flex-start;
+    max-width: 1480px;
+    margin: 0 auto;
+    gap: 0;
 }
 
-.mainnav-inner {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 0 24px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
+.shell-plain { display: block; }
+
+.sidenav {
+    flex: 0 0 214px;
+    align-self: stretch;
+    padding: 18px 10px 28px;
+    background: var(--panel);
+    border-right: 1px solid var(--panel-border);
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+}
+
+.navgroup + .navgroup {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--panel-border);
+}
+
+/* The group name, not a link: it says which source the items below read
+   from, which is what keeps "clusters" unambiguous between VMware and
+   Hyper-V. */
+.navgroup-title {
+    margin: 0 0 6px;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
 }
 
 .navitem {
-    padding: 11px 13px;
+    display: block;
+    padding: 7px 10px;
+    border-radius: 6px;
     font-size: 14px;
     color: var(--text-dim);
-    border-bottom: 2px solid transparent;
+    border-left: 2px solid transparent;
 }
 
 .navitem:hover {
     color: var(--text);
+    background: rgba(127, 127, 127, 0.10);
     text-decoration: none;
 }
 
 .navitem.is-current {
     color: var(--accent);
-    border-bottom-color: var(--accent);
+    background: rgba(127, 127, 127, 0.12);
+    border-left-color: var(--accent);
     font-weight: 550;
 }
 
@@ -212,6 +246,8 @@ p { margin: 0 0 10px; }
 /* --- Content ---------------------------------------------------------- */
 
 .content {
+    flex: 1;
+    min-width: 0;
     max-width: 1280px;
     margin: 0 auto;
     padding: 24px;
@@ -589,9 +625,48 @@ tr.is-inactive td {
 
 /* --- Narrow screens --------------------------------------------------- */
 
+@media (max-width: 900px) {
+    .shell {
+        display: block;
+    }
+
+    .sidenav {
+        position: static;
+        max-height: none;
+        flex: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px 14px;
+        padding: 10px 16px;
+        border-right: none;
+        border-bottom: 1px solid var(--panel-border);
+    }
+
+    .navgroup {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px;
+    }
+
+    .navgroup + .navgroup {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: none;
+    }
+
+    .navgroup-title {
+        margin: 0 4px 0 0;
+        padding: 0;
+    }
+
+    .navitem {
+        border-left: none;
+    }
+}
+
 @media (max-width: 720px) {
     .topbar-inner,
-    .mainnav-inner,
     .content,
     .footer {
         padding-left: 16px;

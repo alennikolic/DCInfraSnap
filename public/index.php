@@ -85,23 +85,58 @@ $translator = new Translator(
 );
 
 // -----------------------------------------------------------------------
-// The menu. Pages arrive over the following steps; until then they appear
-// disabled rather than as links that lead nowhere.
+// The menu, down the left side and grouped by where the data comes from.
+//
+// Grouped rather than one flat row because the three sources answer
+// different questions and the names collide: "clusters" means a vSphere
+// cluster under VMware and a failover cluster under Hyper-V, and a flat list
+// would have to invent longer names to tell them apart. The group says which
+// is which, so each item can keep the name the person actually uses.
+//
+// A group with a null key has no heading — the overview stands on its own.
 // -----------------------------------------------------------------------
 $nav = [
-    ['path' => '/',             'key' => 'nav.overview',     'enabled' => true],
-    ['path' => '/vms',          'key' => 'nav.vms',          'enabled' => true],
-    ['path' => '/hosts',        'key' => 'nav.hosts',        'enabled' => true],
-    ['path' => '/clusters',     'key' => 'nav.clusters',     'enabled' => true],
-    ['path' => '/datastores',   'key' => 'nav.datastores',   'enabled' => true],
-    ['path' => '/licenses',     'key' => 'nav.licenses',     'enabled' => true],
-    ['path' => '/san',          'key' => 'nav.san',          'enabled' => true],
-    ['path' => '/zoning',       'key' => 'nav.zoning',       'enabled' => true],
-    ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
-    ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
-    ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
-    ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
-    ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
+    [
+        'key'   => null,
+        'items' => [
+            ['path' => '/', 'key' => 'nav.overview', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_vmware',
+        'items' => [
+            ['path' => '/vms',        'key' => 'nav.vms',        'enabled' => true],
+            ['path' => '/hosts',      'key' => 'nav.hosts',      'enabled' => true],
+            ['path' => '/clusters',   'key' => 'nav.clusters',   'enabled' => true],
+            ['path' => '/datastores', 'key' => 'nav.datastores', 'enabled' => true],
+            ['path' => '/licenses',   'key' => 'nav.licenses',   'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_san',
+        'items' => [
+            ['path' => '/san',    'key' => 'nav.san',    'enabled' => true],
+            ['path' => '/zoning', 'key' => 'nav.zoning', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_hyperv',
+        'items' => [
+            ['path' => '/hyperv',        'key' => 'nav.hyperv_hosts',  'enabled' => true],
+            ['path' => '/hyperv/vms',    'key' => 'nav.hyperv_vms',    'enabled' => true],
+            ['path' => '/hyperv/shared', 'key' => 'nav.hyperv_shared', 'enabled' => true],
+        ],
+    ],
+    [
+        'key'   => 'nav.group_system',
+        'items' => [
+            ['path' => '/runs',         'key' => 'nav.runs',         'enabled' => true],
+            ['path' => '/reports',      'key' => 'nav.reports',      'enabled' => true],
+            ['path' => '/projects',     'key' => 'nav.projects',     'enabled' => true],
+            ['path' => '/integrations', 'key' => 'nav.integrations', 'enabled' => true],
+            ['path' => '/database',     'key' => 'nav.database',     'enabled' => true],
+        ],
+    ],
 ];
 
 $view = new View($config['views_dir'], $translator);
@@ -230,6 +265,19 @@ if ($path === '/') {
     $route    = 'hyperv.discard';
     $id       = (int) $m[1];
     $stagedId = (int) $m[2];
+} elseif ($path === '/hyperv') {
+    // hv.* for the pages that read collected data, hyperv.* for the actions
+    // on a source. Two prefixes because the source section is reached by
+    // "every route that starts with hyperv.", and a browse page must not
+    // fall into it and be asked which source it belongs to.
+    $route = 'hv.hosts';
+} elseif ($path === '/hyperv/vms') {
+    $route = 'hv.machines';
+} elseif ($path === '/hyperv/shared') {
+    $route = 'hv.shared';
+} elseif (preg_match('#^/hyperv/(hosts|vms)/(\d+)$#', $path, $m) === 1) {
+    $route = $m[1] === 'hosts' ? 'hv.host' : 'hv.machine';
+    $id    = (int) $m[2];
 } elseif ($path === '/projects') {
     $route = 'projects.index';
 } elseif ($path === '/projects/add') {
@@ -862,6 +910,98 @@ if ($route === 'reports.index') {
         'selectedSources'     => $selectedSources,
         'selectedSections'    => $selectedSections,
         'errors'              => $errors,
+    ]));
+}
+
+
+// =======================================================================
+// Hyper-V pages
+//
+// Separate from the vCenter ones because the hv_ tables are separate: a
+// failover cluster node reports only the machines registered on it, and a
+// virtual switch belongs to a host rather than to the cluster.
+// =======================================================================
+if ($route === 'hv.hosts') {
+    $clusters = $inventory->hvClusters();
+    $networks = [];
+    $volumes  = [];
+
+    foreach ($clusters as $cluster) {
+        $key            = (int) $cluster['integration_id'] . ':' . $cluster['moref'];
+        $networks[$key] = $inventory->hvClusterNetworks((int) $cluster['integration_id'], (string) $cluster['moref']);
+        $volumes[$key]  = $inventory->hvVolumes((int) $cluster['integration_id'], (string) $cluster['moref']);
+    }
+
+    $respond($view->render('hyperv/hosts', [
+        'clusters' => $clusters,
+        'networks' => $networks,
+        'volumes'  => $volumes,
+        'nodes'    => $inventory->hvNodes(),
+    ]));
+}
+
+if ($route === 'hv.host') {
+    $node = $inventory->hvNode((int) $id);
+
+    if ($node === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('hyperv/host', [
+        'node'     => $node,
+        'devices'  => $inventory->hvHostDevices((int) $node['integration_id'], (string) $node['moref']),
+        'switches' => $inventory->hvSwitches((int) $node['integration_id'], (string) $node['moref']),
+        'machines' => $inventory->hvVmsOnNode((int) $node['integration_id'], (string) $node['moref']),
+    ]));
+}
+
+if ($route === 'hv.machines') {
+    $filters = [];
+
+    foreach (['q', 'integration', 'state', 'node', 'clustered'] as $name) {
+        $value = trim((string) ($_GET[$name] ?? ''));
+
+        if ($value !== '') {
+            $filters[$name] = $value;
+        }
+    }
+
+    $result = $inventory->hvVms($filters, max(1, (int) ($_GET['page'] ?? 1)));
+
+    $respond($view->render('hyperv/vms', [
+        'machines' => $result['rows'],
+        'total'    => $result['total'],
+        'page'     => $result['page'],
+        'pages'    => $result['pages'],
+        'filters'  => $filters,
+        'options'  => $inventory->hvVmFilterOptions(),
+    ]));
+}
+
+if ($route === 'hv.machine') {
+    $machine = $inventory->hvVm((int) $id);
+
+    if ($machine === null) {
+        $respond($view->render('error', [
+            'title'   => $translator->t('error.not_found'),
+            'message' => null,
+        ]), 404);
+    }
+
+    $respond($view->render('hyperv/vm', [
+        'machine'     => $machine,
+        'disks'       => $inventory->hvVmDisks((int) $machine['integration_id'], (string) $machine['moref']),
+        'nics'        => $inventory->hvVmNics((int) $machine['integration_id'], (string) $machine['moref']),
+        'checkpoints' => $inventory->hvVmCheckpoints((int) $machine['integration_id'], (string) $machine['moref']),
+    ]));
+}
+
+if ($route === 'hv.shared') {
+    $respond($view->render('hyperv/shared', [
+        'disks' => $inventory->hvSharedDisks(),
     ]));
 }
 

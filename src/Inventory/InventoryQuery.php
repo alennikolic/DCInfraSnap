@@ -642,6 +642,362 @@ final class InventoryQuery
      *
      * @return list<array<string, mixed>>
      */
+
+    // -----------------------------------------------------------------
+    // Hyper-V
+    //
+    // The hv_ tables stand on their own, so these are separate queries
+    // rather than a widened version of the vCenter ones. A cluster node and
+    // an ESXi host answer different questions: what a node carries is only
+    // the machines registered on it, because that is what its file reported.
+    // -----------------------------------------------------------------
+
+    /**
+     * Clusters, with what sits on them.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function hvClusters(): array
+    {
+        return $this->pdo->query(
+            'SELECT c.*,
+                    i.name AS integration_name,
+                    (SELECT COUNT(*) FROM hv_node n
+                      WHERE n.integration_id = c.integration_id
+                        AND n.cluster_moref = c.moref)            AS node_rows,
+                    (SELECT COUNT(*) FROM hv_csv v
+                      WHERE v.integration_id = c.integration_id
+                        AND v.cluster_moref = c.moref)            AS csv_count,
+                    (SELECT COALESCE(SUM(v.size_bytes), 0) FROM hv_csv v
+                      WHERE v.integration_id = c.integration_id
+                        AND v.cluster_moref = c.moref)            AS csv_bytes,
+                    (SELECT COALESCE(SUM(v.free_bytes), 0) FROM hv_csv v
+                      WHERE v.integration_id = c.integration_id
+                        AND v.cluster_moref = c.moref)            AS csv_free_bytes,
+                    (SELECT COUNT(*) FROM hv_vm m
+                      WHERE m.integration_id = c.integration_id)  AS vm_count
+               FROM hv_cluster c
+               JOIN integration i ON i.id = c.integration_id
+              ORDER BY c.name'
+        )->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvNodes(): array
+    {
+        return $this->pdo->query(
+            'SELECT n.*,
+                    i.name AS integration_name,
+                    c.name AS cluster_name,
+                    (SELECT COUNT(*) FROM hv_vm m
+                      WHERE m.integration_id = n.integration_id
+                        AND m.owner_node_moref = n.moref)   AS machine_count,
+                    (SELECT COUNT(*) FROM hv_vm m
+                      WHERE m.integration_id = n.integration_id
+                        AND m.owner_node_moref = n.moref
+                        AND m.vm_state = \'Running\')       AS running_count
+               FROM hv_node n
+               JOIN integration i ON i.id = n.integration_id
+               LEFT JOIN hv_cluster c
+                      ON c.integration_id = n.integration_id
+                     AND c.moref = n.cluster_moref
+              ORDER BY c.name, n.hostname'
+        )->fetchAll();
+    }
+
+    public function hvNode(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT n.*, i.name AS integration_name, c.name AS cluster_name
+               FROM hv_node n
+               JOIN integration i ON i.id = n.integration_id
+               LEFT JOIN hv_cluster c
+                      ON c.integration_id = n.integration_id
+                     AND c.moref = n.cluster_moref
+              WHERE n.id = :id'
+        );
+
+        $stmt->execute(['id' => $id]);
+
+        $row = $stmt->fetch();
+
+        return $row === false ? null : $row;
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvClusterNetworks(int $integrationId, string $clusterMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_cluster_network
+              WHERE integration_id = :id AND cluster_moref = :cluster
+              ORDER BY metric, name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'cluster' => $clusterMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvVolumes(int $integrationId, string $clusterMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_csv
+              WHERE integration_id = :id AND cluster_moref = :cluster
+              ORDER BY name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'cluster' => $clusterMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvHostDevices(int $integrationId, string $nodeMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_host_device
+              WHERE integration_id = :id AND node_moref = :node
+              ORDER BY FIELD(kind, \'pnic\', \'team\', \'host_vnic\', \'host_nic_os\'), name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'node' => $nodeMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvSwitches(int $integrationId, string $nodeMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT s.*,
+                    (SELECT COUNT(*) FROM hv_vm_nic n
+                      WHERE n.integration_id = s.integration_id
+                        AND n.switch_moref = s.moref) AS nic_count
+               FROM hv_vswitch s
+              WHERE s.integration_id = :id AND s.node_moref = :node
+              ORDER BY s.name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'node' => $nodeMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * The machines, newest-looking first by name.
+     *
+     * Filters are the same shape as the vCenter list takes, so the view can
+     * be read the same way: a search box and a few dropdowns.
+     *
+     * @param array<string, string> $filters
+     *
+     * @return array{rows: list<array<string, mixed>>, total: int, page: int, pages: int}
+     */
+    public function hvVms(array $filters, int $page = 1, int $perPage = self::PER_PAGE): array
+    {
+        $conditions = [];
+        $params     = [];
+
+        if (($filters['q'] ?? '') !== '') {
+            // One placeholder per occurrence: PDO runs without emulated
+            // prepares, so a named placeholder cannot be reused in one
+            // statement.
+            $conditions[]       = '(m.name LIKE :q1 ESCAPE \'!\' OR m.guest_hostname LIKE :q2 ESCAPE \'!\'
+                                    OR m.guest_os_name LIKE :q3 ESCAPE \'!\')';
+            $like               = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $filters['q']) . '%';
+            $params['q1']       = $like;
+            $params['q2']       = $like;
+            $params['q3']       = $like;
+        }
+
+        if (($filters['integration'] ?? '') !== '') {
+            $conditions[]          = 'm.integration_id = :integration';
+            $params['integration'] = (int) $filters['integration'];
+        }
+
+        if (($filters['state'] ?? '') !== '') {
+            $conditions[]    = 'm.vm_state = :state';
+            $params['state'] = $filters['state'];
+        }
+
+        if (($filters['node'] ?? '') !== '') {
+            $conditions[]   = 'm.owner_node_moref = :node';
+            $params['node'] = $filters['node'];
+        }
+
+        if (($filters['clustered'] ?? '') !== '') {
+            $conditions[] = $filters['clustered'] === '1'
+                ? 'm.is_clustered = 1'
+                : '(m.is_clustered = 0 OR m.is_clustered IS NULL)';
+        }
+
+        $where = $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions);
+
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM hv_vm m' . $where);
+        $count->execute($params);
+        $total = (int) $count->fetchColumn();
+
+        $pages  = max(1, (int) ceil($total / $perPage));
+        $page   = max(1, min($page, $pages));
+        $offset = ($page - 1) * $perPage;
+
+        $stmt = $this->pdo->prepare(
+            'SELECT m.*, i.name AS integration_name, n.hostname AS node_name, n.id AS node_id
+               FROM hv_vm m
+               JOIN integration i ON i.id = m.integration_id
+               LEFT JOIN hv_node n
+                      ON n.integration_id = m.integration_id
+                     AND n.moref = m.owner_node_moref'
+            . $where
+            . ' ORDER BY m.name LIMIT ' . $perPage . ' OFFSET ' . $offset
+        );
+
+        $stmt->execute($params);
+
+        return ['rows' => $stmt->fetchAll(), 'total' => $total, 'page' => $page, 'pages' => $pages];
+    }
+
+    /**
+     * What the machine list can be filtered by, taken from the data itself
+     * so a dropdown never offers a value that matches nothing.
+     *
+     * @return array{integrations: list<array<string, mixed>>, states: list<string>, nodes: list<array<string, mixed>>}
+     */
+    public function hvVmFilterOptions(): array
+    {
+        return [
+            'integrations' => $this->pdo->query(
+                'SELECT DISTINCT i.id, i.name FROM integration i
+                   JOIN hv_vm m ON m.integration_id = i.id
+                  ORDER BY i.name'
+            )->fetchAll(),
+            'states' => array_column($this->pdo->query(
+                'SELECT DISTINCT vm_state FROM hv_vm
+                  WHERE vm_state IS NOT NULL ORDER BY vm_state'
+            )->fetchAll(), 'vm_state'),
+            'nodes' => $this->pdo->query(
+                'SELECT DISTINCT n.moref, n.hostname
+                   FROM hv_node n
+                   JOIN hv_vm m ON m.owner_node_moref = n.moref
+                                AND m.integration_id = n.integration_id
+                  ORDER BY n.hostname'
+            )->fetchAll(),
+        ];
+    }
+
+    public function hvVm(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT m.*, i.name AS integration_name,
+                    n.hostname AS node_name, n.id AS node_id,
+                    c.name AS cluster_name
+               FROM hv_vm m
+               JOIN integration i ON i.id = m.integration_id
+               LEFT JOIN hv_node n
+                      ON n.integration_id = m.integration_id
+                     AND n.moref = m.owner_node_moref
+               LEFT JOIN hv_cluster c
+                      ON c.integration_id = m.integration_id
+                     AND c.moref = n.cluster_moref
+              WHERE m.id = :id'
+        );
+
+        $stmt->execute(['id' => $id]);
+
+        $row = $stmt->fetch();
+
+        return $row === false ? null : $row;
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvVmsOnNode(int $integrationId, string $nodeMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_vm
+              WHERE integration_id = :id AND owner_node_moref = :node
+              ORDER BY name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'node' => $nodeMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvVmDisks(int $integrationId, string $vmMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT d.*,
+                    (SELECT COUNT(*) FROM hv_vm_disk o
+                      WHERE o.integration_id = d.integration_id
+                        AND o.disk_path = d.disk_path) AS attached_to
+               FROM hv_vm_disk d
+              WHERE d.integration_id = :id AND d.vm_moref = :vm
+              ORDER BY d.controller_type, d.controller_number, d.controller_location'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'vm' => $vmMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvVmNics(int $integrationId, string $vmMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_vm_nic
+              WHERE integration_id = :id AND vm_moref = :vm
+              ORDER BY name'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'vm' => $vmMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function hvVmCheckpoints(int $integrationId, string $vmMoref): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM hv_vm_checkpoint
+              WHERE integration_id = :id AND vm_moref = :vm
+              ORDER BY created_at_source'
+        );
+
+        $stmt->execute(['id' => $integrationId, 'vm' => $vmMoref]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Virtual disks that more than one machine is attached to.
+     *
+     * No table of its own: a shared VHDX is an ordinary row, and the machines
+     * sharing one are found by grouping on the path. This is the query that
+     * answers "which guest cluster is on which disk".
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function hvSharedDisks(): array
+    {
+        return $this->pdo->query(
+            'SELECT d.disk_path, d.integration_id,
+                    COUNT(*)                          AS machine_count,
+                    MAX(d.is_shared)                  AS is_shared,
+                    MAX(d.size_bytes)                 AS size_bytes,
+                    GROUP_CONCAT(m.name ORDER BY m.name SEPARATOR \', \') AS machines
+               FROM hv_vm_disk d
+               LEFT JOIN hv_vm m
+                      ON m.integration_id = d.integration_id
+                     AND m.moref = d.vm_moref
+              WHERE d.disk_path IS NOT NULL
+              GROUP BY d.integration_id, d.disk_path
+             HAVING machine_count > 1 OR MAX(d.is_shared) = 1
+              ORDER BY machine_count DESC, d.disk_path'
+        )->fetchAll();
+    }
+
     public function changes(ObjectType $type, int $objectId, int $limit = 100): array
     {
         $stmt = $this->pdo->prepare(
