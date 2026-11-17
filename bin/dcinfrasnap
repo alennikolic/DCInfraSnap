@@ -15,6 +15,7 @@
 //   bin/dcinfrasnap integration:add      add a source (interactive)
 //   bin/dcinfrasnap brocade:dry <id>     read a switch and print it, write nothing
 //   bin/dcinfrasnap hyperv:dry <file>…   read collector files and print them, write nothing
+//   bin/dcinfrasnap hyperv:import <id> <file>…  store collector files as one run
 //   bin/dcinfrasnap integration:test <id>      check the connection
 //   bin/dcinfrasnap integration:password <id>  change the password
 //   bin/dcinfrasnap integration:enable <id>
@@ -55,6 +56,7 @@ use DcInfraSnap\Inventory\RawObjectRepository;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\BrocadeException;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
+use DcInfraSnap\Source\Hyperv\OfflineImporter as HypervImporter;
 use DcInfraSnap\Source\Hyperv\OfflineMapper as HypervMapper;
 use DcInfraSnap\Source\Hyperv\OfflinePayload as HypervPayload;
 use DcInfraSnap\Source\VCenter\ClientFactory;
@@ -139,6 +141,7 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  runs:reset <run>            release a stuck run');
     $stdout('  brocade:dry <id>            read a switch and print it, write nothing');
     $stdout('  hyperv:dry <file>...        read Hyper-V collector files, write nothing');
+    $stdout('  hyperv:import <id> <file>.. store Hyper-V collector files as one run');
     $stdout('  worker                      process the collection queue');
     $stdout('  help                 this list');
     $stdout();
@@ -703,13 +706,52 @@ if (str_starts_with($command, 'integration')) {
         $stdout();
         $stdout('  1) vCenter      (vSphere API over HTTPS)');
         $stdout('  2) Brocade      (FC switch over SSH)');
+        $stdout('  3) Hyper-V      (offline: a script runs on the host, you upload the file)');
         $stdout();
 
         $choice = $ask('Which kind', '1');
-        $type   = $choice === '2' ? Integration::TYPE_BROCADE : Integration::TYPE_VCENTER;
-        $label  = $type === Integration::TYPE_BROCADE ? 'switch' : 'vCenter';
+        $type   = match ($choice) {
+            '2'     => Integration::TYPE_BROCADE,
+            '3'     => Integration::TYPE_HYPERV,
+            default => Integration::TYPE_VCENTER,
+        };
 
         $stdout();
+
+        // --- offline: a label, and nothing to sign in to ------------------
+        //
+        // Asked separately rather than squeezed into the questions below,
+        // because every one of those is about a connection this source does
+        // not have.
+        if (in_array($type, Integration::OFFLINE_TYPES, true)) {
+            $stdout('A Hyper-V source is collected offline: there is no address and no account.');
+            $stdout('Name it after the cluster, or after the host when it is standalone.');
+            $stdout();
+
+            $hostname = $ask('Cluster or host name (as Windows reports it)');
+
+            if ($hostname === '') {
+                $stderr('The name is required.');
+                exit(1);
+            }
+
+            $name = $ask('Name for this source', $hostname);
+
+            try {
+                $newId = $repo->createOffline(name: $name, hostname: $hostname, type: $type);
+            } catch (Throwable $e) {
+                $stderr($e->getMessage());
+                exit(1);
+            }
+
+            $stdout();
+            $stdout("Added as number {$newId}.");
+            $stdout('Run resources/collector/dcinfrasnap-hyperv.ps1 on every node, then:');
+            $stdout("  php bin/dcinfrasnap hyperv:import {$newId} <file> [<file> ...]");
+            exit(0);
+        }
+
+        $label = $type === Integration::TYPE_BROCADE ? 'switch' : 'vCenter';
 
         $hostname = $ask('Hostname or IP of the ' . $label);
 
@@ -955,7 +997,7 @@ if (str_starts_with($command, 'integration')) {
 // Collecting
 // =======================================================================
 if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'runs:reset',
-                        'worker', 'brocade:dry'], true)) {
+                        'worker', 'brocade:dry', 'hyperv:import'], true)) {
     try {
         $secret = new Secret($config['secret_key']);
     } catch (Throwable $e) {
@@ -1076,6 +1118,99 @@ if (in_array($command, ['discover', 'discover:queue', 'collect:dry', 'runs', 'ru
 
         $stderr("Run {$runId} is not queued or running; nothing to release.");
         exit(1);
+    }
+
+    // --- hyperv:import ----------------------------------------------------
+    //
+    // Write a set of collector files into the database as one run.
+    //
+    // Every node of a cluster at once, because sync() reconciles the whole
+    // source: a run holding one node's file would journal every machine on
+    // the other nodes as gone. An incomplete set is refused unless --force
+    // says otherwise, and --force means exactly that consequence.
+    if ($command === 'hyperv:import') {
+        $integration = $requireSource();
+
+        if (!$integration->isHyperV()) {
+            $stderr($integration->name . ' is not a Hyper-V source.');
+            exit(1);
+        }
+
+        $paths = [];
+        $force = false;
+
+        foreach (array_slice($argv, 3) as $argument) {
+            if ($argument === '--force') {
+                $force = true;
+                continue;
+            }
+
+            $paths[] = $argument;
+        }
+
+        if ($paths === []) {
+            $stderr('Which files? e.g. hyperv:import ' . $integration->id . ' HOST01.json HOST02.json');
+            $stderr('Check them first with: hyperv:dry <file> ...');
+            exit(1);
+        }
+
+        try {
+            $payloads = array_map(
+                static fn (string $path): HypervPayload => HypervPayload::fromFile($path),
+                $paths
+            );
+
+            $mapper = new HypervMapper($payloads);
+        } catch (Throwable $e) {
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        }
+
+        $missing = $mapper->missingNodes();
+
+        if ($missing !== [] && !$force) {
+            $stderr('There is no file for ' . implode(', ', $missing) . '.');
+            $stderr();
+            $stderr('Importing this set would record every machine on those nodes as gone.');
+            $stderr('Collect them, or repeat with --force if that is what you mean.');
+            exit(1);
+        }
+
+        if ($missing !== []) {
+            $stdout('WARNING: importing without ' . implode(', ', $missing)
+                . '. Their machines will be journalled as gone.');
+            $stdout();
+        }
+
+        // startDirect, not queue: the files are already here, so there is
+        // nothing for the worker to wait for. The lock is the same either
+        // way — active_lock refuses a second concurrent run on insert.
+        try {
+            $runId = $runs->startDirect($integration->id, 'cli');
+        } catch (Throwable $e) {
+            $stderr($e->getMessage());
+            exit(1);
+        }
+
+        $importer = new HypervImporter(
+            new RawObjectRepository($pdo),
+            new InventoryRepository($pdo),
+            $runs,
+            $stdout,
+        );
+
+        try {
+            $result = $importer->import($integration, $runId, $mapper);
+        } catch (Throwable $e) {
+            $runs->finish($runId, 'failed', 0, $e->getMessage());
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        }
+
+        $stdout();
+        $stdout('Run ' . $runId . '. See it with: php bin/dcinfrasnap runs');
+
+        exit($result['status'] === 'failed' ? 1 : 0);
     }
 
     // --- collect:dry ------------------------------------------------------

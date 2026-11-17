@@ -195,6 +195,52 @@ class IntegrationRepository
     }
 
     /**
+     * Add a source that is collected offline.
+     *
+     * Separate from create() on purpose: there is no credential to take and
+     * none to encrypt, so username and password_encrypted are left NULL
+     * rather than filled with empty strings that would later read as "the
+     * account is called nothing". hostname carries the cluster or host name
+     * and the port stays 0, which keeps uq_integration_endpoint meaningful:
+     * the same cluster cannot be registered twice.
+     *
+     * @return int the id of the new source
+     */
+    public function createOffline(
+        string $name,
+        string $hostname,
+        string $type = Integration::TYPE_HYPERV,
+    ): int {
+        if (!in_array($type, Integration::OFFLINE_TYPES, true)) {
+            throw new RuntimeException("{$type} is not an offline source type.");
+        }
+
+        $port = Integration::defaultPort($type);
+
+        if ($this->findByEndpoint($type, $hostname, $port) !== null) {
+            throw new RuntimeException("A source named {$hostname} already exists.");
+        }
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO integration
+                (type, name, hostname, port, username, password_encrypted,
+                 verify_peer, is_active, created_at, updated_at)
+             VALUES
+                (:type, :name, :hostname, :port, NULL, NULL,
+                 0, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+        );
+
+        $stmt->bindValue('type', $type);
+        $stmt->bindValue('name', $name);
+        $stmt->bindValue('hostname', $hostname);
+        $stmt->bindValue('port', $port, PDO::PARAM_INT);
+
+        $stmt->execute();
+
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    /**
      * Change everything except the password — updatePassword() does that.
      */
     public function update(
