@@ -14,6 +14,7 @@
 //   bin/dcinfrasnap integrations         list the configured sources
 //   bin/dcinfrasnap integration:add      add a source (interactive)
 //   bin/dcinfrasnap brocade:dry <id>     read a switch and print it, write nothing
+//   bin/dcinfrasnap hyperv:dry <file>…   read collector files and print them, write nothing
 //   bin/dcinfrasnap integration:test <id>      check the connection
 //   bin/dcinfrasnap integration:password <id>  change the password
 //   bin/dcinfrasnap integration:enable <id>
@@ -54,6 +55,8 @@ use DcInfraSnap\Inventory\RawObjectRepository;
 use DcInfraSnap\Run\RunRepository;
 use DcInfraSnap\Source\Brocade\BrocadeException;
 use DcInfraSnap\Source\Brocade\ClientFactory as BrocadeClientFactory;
+use DcInfraSnap\Source\Hyperv\OfflineMapper as HypervMapper;
+use DcInfraSnap\Source\Hyperv\OfflinePayload as HypervPayload;
 use DcInfraSnap\Source\VCenter\ClientFactory;
 use DcInfraSnap\Source\VCenter\VCenterException;
 
@@ -135,6 +138,7 @@ if (in_array($command, ['help', '--help', '-h'], true)) {
     $stdout('  runs                        recent collections');
     $stdout('  runs:reset <run>            release a stuck run');
     $stdout('  brocade:dry <id>            read a switch and print it, write nothing');
+    $stdout('  hyperv:dry <file>...        read Hyper-V collector files, write nothing');
     $stdout('  worker                      process the collection queue');
     $stdout('  help                 this list');
     $stdout();
@@ -234,6 +238,317 @@ if ($command === 'lang:check') {
     $stdout();
     $stdout('A missing key is not an error — it falls back to English.');
     exit(0);
+}
+
+// --- hyperv:dry ----------------------------------------------------------
+//
+// Read one or more collector files and print everything that was parsed,
+// writing nothing. This is the command to run first on a new Hyper-V
+// environment, for the same reason as brocade:dry: it shows what the script
+// could actually see on the host, and whether every step produced output.
+//
+// It needs no database and no source, because the files are the input. Give
+// every node's file at once — that is how the import works, and it is what
+// shows whether the set covers the cluster.
+if ($command === 'hyperv:dry') {
+    $paths = array_slice($argv, 2);
+
+    if ($paths === []) {
+        $stderr('Which file? e.g. hyperv:dry storage/import/dcinfrasnap-hyperv-HOST01-20261117-080641.json');
+        $stderr('Give every node of a cluster at once, so coverage can be checked.');
+        exit(1);
+    }
+
+    $payloads = [];
+
+    foreach ($paths as $path) {
+        try {
+            $payloads[] = HypervPayload::fromFile($path);
+        } catch (Throwable $e) {
+            $stderr('FAILED: ' . $e->getMessage());
+            exit(1);
+        }
+    }
+
+    try {
+        $mapper = new HypervMapper($payloads);
+    } catch (Throwable $e) {
+        $stderr('FAILED: ' . $e->getMessage());
+        exit(1);
+    }
+
+    // --- the files -------------------------------------------------------
+    $stdout('Files: ' . count($payloads) . ', collected as a ' . ($mapper->isCluster() ? 'cluster' : 'standalone host'));
+    $stdout();
+
+    foreach ($payloads as $payload) {
+        $stdout(sprintf('  %-16s %s  script %s  %s  %ds  %d machine(s)',
+            $payload->collectorHost(),
+            $payload->generatedAt() ?? '?',
+            $payload->scriptVersion() ?? '?',
+            $payload->runAsAdmin() ? 'admin' : 'NOT ADMIN',
+            (int) round($payload->durationSeconds()),
+            count($payload->vms())));
+    }
+
+    $spread = $mapper->timeSpreadSeconds();
+
+    if (count($payloads) > 1) {
+        $stdout();
+        $stdout('  collected within ' . ($spread < 120 ? $spread . ' seconds' : intdiv($spread, 60) . ' minutes')
+            . ' of each other');
+    }
+
+    // --- coverage: which steps produced nothing --------------------------
+    $stdout();
+    $stdout('Output per collection step:');
+
+    foreach ($payloads as $payload) {
+        $stdout('  ' . $payload->collectorHost() . ':');
+
+        foreach ($payload->collection() as $step) {
+            $note = match ($step['status']) {
+                'ok'          => $step['count'] . '',
+                'empty'       => 'nothing — none configured, or the account cannot see it',
+                'unavailable' => 'not available on this host',
+                default       => 'ERROR: ' . $step['message'],
+            };
+
+            $stdout(sprintf('    %-38s %-8s %s', $step['step'], $step['status'], $note));
+        }
+    }
+
+    // --- what the set would store ----------------------------------------
+    $rows = $mapper->rows();
+
+    $stdout();
+    $stdout('Objects the import would record:');
+
+    foreach ($rows as $key => $objects) {
+        $stdout(sprintf('  %-20s %d', $key, count($objects)));
+    }
+
+    // --- cluster ---------------------------------------------------------
+    if ($mapper->isCluster() && isset($rows['hv_cluster'][0])) {
+        $cluster = $rows['hv_cluster'][0];
+
+        $stdout();
+        $stdout('Cluster ' . $cluster['fields']['name'] . '  (' . $cluster['moref'] . ')');
+        $stdout(sprintf('  %-22s %s', 'domain', $cluster['fields']['domain'] ?? '—'));
+        $stdout(sprintf('  %-22s %s', 'functional level', $cluster['fields']['functional_level'] ?? '—'));
+        $stdout(sprintf('  %-22s %s', 'quorum', ($cluster['fields']['quorum_type'] ?? '—')
+            . ' on ' . ($cluster['fields']['quorum_resource'] ?? '—')));
+        $stdout(sprintf('  %-22s %s', 'nodes', $cluster['fields']['node_count'] ?? '—'));
+
+        foreach ($rows['hv_cluster_network'] as $network) {
+            $stdout(sprintf('  network %-14s %-18s %-16s metric %s',
+                $network['fields']['name'],
+                $network['fields']['network_role'] ?? '—',
+                $network['fields']['address'] ?? '—',
+                $network['fields']['metric'] ?? '—'));
+        }
+
+        foreach ($rows['hv_csv'] as $csv) {
+            $size = (int) ($csv['fields']['size_bytes'] ?? 0);
+            $free = (int) ($csv['fields']['free_bytes'] ?? 0);
+
+            $stdout(sprintf('  volume  %-14s %-28s %s  %s free of %s  owner %s',
+                $csv['fields']['name'],
+                $csv['fields']['friendly_path'] ?? '—',
+                $csv['fields']['file_system'] ?? '—',
+                $size > 0 ? round($free / 1073741824) . ' GiB' : '—',
+                $size > 0 ? round($size / 1073741824) . ' GiB' : '—',
+                $csv['fields']['owner_node'] ?? '—'));
+        }
+    }
+
+    // --- nodes -----------------------------------------------------------
+    foreach ($rows['hv_node'] as $node) {
+        $f = $node['fields'];
+
+        $stdout();
+        $stdout('Host ' . $f['hostname'] . '  (' . $node['moref'] . ')');
+        $stdout(sprintf('  %-22s %s', 'hardware', ($f['vendor'] ?? '—') . ' ' . ($f['model'] ?? '')
+            . '  serial ' . ($f['serial_number'] ?? '—') . '  BIOS ' . ($f['bios_version'] ?? '—')));
+        $stdout(sprintf('  %-22s %s', 'operating system', ($f['os_caption'] ?? '—') . ' build ' . ($f['os_build'] ?? '—')));
+        $stdout(sprintf('  %-22s %s', 'processor', ($f['cpu_model'] ?? '—') . '  '
+            . ($f['cpu_sockets'] ?? '?') . ' socket(s), ' . ($f['cpu_cores'] ?? '?') . ' cores, '
+            . ($f['cpu_logical'] ?? '?') . ' logical'));
+        $stdout(sprintf('  %-22s %s', 'memory', $f['memory_bytes'] === null
+            ? '—' : round(((int) $f['memory_bytes']) / 1073741824) . ' GiB'));
+        $stdout(sprintf('  %-22s %s', 'cluster', $f['cluster_moref'] === null
+            ? 'standalone' : ($f['node_state'] ?? '?') . ', node id ' . ($f['cluster_node_id'] ?? '?')));
+        $stdout(sprintf('  %-22s %s', 'live migration', $f['migration_enabled'] ? ($f['migration_auth_type']
+            . ' over ' . $f['migration_performance']) : 'off'));
+        $stdout(sprintf('  %-22s %s', 'replica', $f['replica_enabled'] === null
+            ? 'not configured' : ($f['replica_enabled'] ? 'on' : 'off')));
+
+        foreach ($rows['hv_vswitch'] as $switch) {
+            if ($switch['fields']['node_moref'] !== $node['moref']) {
+                continue;
+            }
+
+            $stdout(sprintf('  switch  %-16s %-9s %s  uplinks: %s',
+                $switch['fields']['name'],
+                $switch['fields']['switch_type'] ?? '—',
+                $switch['fields']['embedded_teaming']
+                    ? 'SET ' . ($switch['fields']['team_teaming_mode'] ?? '') . '/' . ($switch['fields']['team_load_balancing'] ?? '')
+                    : 'no teaming',
+                $switch['fields']['uplink_adapters'] ?? '—'));
+        }
+
+        foreach ($rows['hv_host_device'] as $device) {
+            if ($device['fields']['node_moref'] !== $node['moref']) {
+                continue;
+            }
+
+            $stdout(sprintf('  %-7s %-18s %-17s %-10s %-22s %s',
+                $device['fields']['kind'],
+                $device['fields']['name'],
+                $device['fields']['mac_address'] ?? '—',
+                $device['fields']['link_speed'] ?? ($device['fields']['device_status'] ?? '—'),
+                $device['fields']['vlan_mode'] === null
+                    ? ''
+                    : 'vlan ' . ($device['fields']['vlan_access_id'] ?? '?') . ' on ' . ($device['fields']['switch_name'] ?? '?'),
+                $device['fields']['ip_addresses'] ?? ''));
+        }
+    }
+
+    // --- machines --------------------------------------------------------
+    $stdout();
+    $stdout('Machines:');
+
+    foreach ($rows['hv_vm'] as $vm) {
+        $f = $vm['fields'];
+
+        $stdout();
+        $stdout(sprintf('  %s  (%s)', $f['name'], $vm['moref']));
+        $stdout(sprintf('    %-20s %s', 'state', $f['vm_state'] . ', ' . $f['vm_status']));
+        $stdout(sprintf('    %-20s %s', 'on', $f['owner_node'] . ($f['is_clustered'] ? ', clustered' : ', not a cluster resource')));
+        $stdout(sprintf('    %-20s %s', 'generation', $f['generation'] . ', config ' . $f['config_version']
+            . ', secure boot ' . ($f['secure_boot'] ?? '—')));
+        $stdout(sprintf('    %-20s %s', 'cpu / memory', $f['processor_count'] . ' vCPU, '
+            . round(((int) $f['memory_startup']) / 1073741824, 1) . ' GiB startup'
+            . ($f['dynamic_memory_enabled'] ? ', dynamic' : ', static')));
+        $stdout(sprintf('    %-20s %s', 'guest', ($f['guest_os_name'] ?? 'not reported')
+            . ($f['guest_hostname'] === null ? '' : ' — ' . $f['guest_hostname'])));
+        $stdout(sprintf('    %-20s %s', 'integration services', $f['integration_services_version']
+            ?? 'not reported by the guest'));
+        $stdout(sprintf('    %-20s %s', 'storage', $f['disk_count'] . ' disk(s), '
+            . ($f['disk_capacity_bytes'] === null ? '—' : round(((int) $f['disk_capacity_bytes']) / 1073741824) . ' GiB provisioned')
+            . ($f['disk_file_bytes'] === null ? '' : ', ' . round(((int) $f['disk_file_bytes']) / 1073741824) . ' GiB on disk')));
+
+        foreach ($rows['hv_vm_disk'] as $disk) {
+            if ($disk['fields']['vm_moref'] !== $vm['moref']) {
+                continue;
+            }
+
+            $stdout(sprintf('      disk %s %s:%s  %-9s %-28s %s%s',
+                $disk['fields']['controller_type'],
+                $disk['fields']['controller_number'],
+                $disk['fields']['controller_location'],
+                $disk['fields']['vhd_type'] ?? ($disk['fields']['is_pass_through'] ? 'pass-through' : '—'),
+                basename((string) ($disk['fields']['disk_path'] ?? '—')),
+                $disk['fields']['size_bytes'] === null
+                    ? '' : round(((int) $disk['fields']['size_bytes']) / 1073741824) . ' GiB',
+                $disk['fields']['is_shared'] ? '  SHARED' : ''));
+
+            if ($disk['fields']['vhd_error'] !== null) {
+                $stdout('        could not be read: ' . $disk['fields']['vhd_error']);
+            }
+        }
+
+        foreach ($rows['hv_vm_nic'] as $nic) {
+            if ($nic['fields']['vm_moref'] !== $vm['moref']) {
+                continue;
+            }
+
+            $stdout(sprintf('      nic  %-17s %-14s vlan %-18s %s%s',
+                $nic['fields']['mac_address'] ?? '—',
+                $nic['fields']['switch_name'] ?? '—',
+                $nic['fields']['vlan_mode'] === 'Trunk'
+                    ? 'trunk ' . ($nic['fields']['vlan_allowed_list'] ?? '?')
+                    : (string) ($nic['fields']['vlan_access_id'] ?? '—'),
+                $nic['fields']['ip_addresses'] ?? '',
+                $nic['fields']['mac_spoofing'] === 'On' ? '  mac spoofing ON' : ''));
+        }
+
+        foreach ($rows['hv_vm_checkpoint'] as $checkpoint) {
+            if ($checkpoint['fields']['vm_moref'] !== $vm['moref']) {
+                continue;
+            }
+
+            $stdout(sprintf('      checkpoint %-28s %-12s %s',
+                $checkpoint['fields']['name'],
+                $checkpoint['fields']['checkpoint_type'] ?? '—',
+                $checkpoint['fields']['created_at_source'] ?? '—'));
+        }
+
+        if ($f['replication_state'] !== null && $f['replication_state'] !== 'Disabled') {
+            $stdout(sprintf('      replication %s, %s, to %s every %ss, last %s',
+                $f['replication_state'],
+                $f['replication_health'] ?? '?',
+                $f['replication_replica_server'] ?? '?',
+                $f['replication_frequency_sec'] ?? '?',
+                $f['replication_last_time'] ?? 'never'));
+        }
+    }
+
+    // --- shared disks ----------------------------------------------------
+    $byPath = [];
+
+    foreach ($rows['hv_vm_disk'] as $disk) {
+        $path = $disk['fields']['disk_path'];
+
+        if ($path === null) {
+            continue;
+        }
+
+        $byPath[$path][] = $disk['fields']['vm_moref'];
+    }
+
+    $shared = array_filter($byPath, static fn (array $users): bool => count($users) > 1);
+
+    $stdout();
+
+    if ($shared === []) {
+        $stdout('No virtual disk is attached to more than one machine.');
+    } else {
+        $stdout('Disks attached to more than one machine:');
+
+        foreach ($shared as $path => $users) {
+            $stdout('  ' . $path . ' — ' . count($users) . ' machines');
+        }
+    }
+
+    // --- coverage and warnings -------------------------------------------
+    $missing = $mapper->missingNodes();
+
+    $stdout();
+
+    if ($missing === []) {
+        $stdout($mapper->isCluster()
+            ? 'Every node of the cluster is covered by a file.'
+            : 'The host is covered by a file.');
+    } else {
+        $stdout('MISSING: no file for ' . implode(', ', $missing) . '.');
+        $stdout('An import of this set would record their machines as gone.');
+    }
+
+    $warnings = $mapper->warnings();
+
+    if ($warnings !== []) {
+        $stdout();
+        $stdout('Worth knowing:');
+
+        foreach ($warnings as $warning) {
+            $stdout('  - ' . $warning);
+        }
+    }
+
+    $stdout();
+    $stdout('Nothing was written.');
+    exit($missing === [] ? 0 : 1);
 }
 
 // =======================================================================

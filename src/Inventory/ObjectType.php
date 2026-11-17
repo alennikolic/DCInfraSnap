@@ -289,6 +289,230 @@ final class ObjectType
                 // is not a change to this member.
                 volatile: ['sort_order'],
             ),
+
+            // ---------------------------------------------------------
+            // Hyper-V
+            //
+            // Collected offline: a read-only PowerShell script runs on each
+            // host and the resulting file is uploaded. The keys carry an hv_
+            // prefix because this list is a map keyed by the key — "cluster"
+            // and "vm" are already taken by vCenter, and a repeat would
+            // silently replace it.
+            //
+            // Order: the cluster and its storage first, then the nodes, then
+            // what sits on them, so a reader walking the list meets a
+            // machine's host before the machine.
+            // ---------------------------------------------------------
+            new self(
+                key: 'hv_cluster',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_cluster',
+                changeTable: 'hv_cluster_change',
+                changeKey: 'cluster_id',
+                columns: [
+                    'name', 'domain', 'functional_level', 'upgrade_version',
+                    'quorum_type', 'quorum_resource', 'shared_volumes_root', 'node_count',
+                ],
+            ),
+
+            new self(
+                key: 'hv_cluster_network',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_cluster_network',
+                changeTable: 'hv_cluster_network_change',
+                changeKey: 'network_id',
+                columns: [
+                    'cluster_moref', 'name', 'network_role', 'network_state',
+                    'address', 'address_mask', 'ipv6_address', 'metric',
+                ],
+            ),
+
+            new self(
+                key: 'hv_csv',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_csv',
+                changeTable: 'hv_csv_change',
+                changeKey: 'csv_id',
+                columns: [
+                    'cluster_moref', 'name', 'csv_state', 'owner_node',
+                    'friendly_path', 'volume_name', 'file_system', 'fault_state',
+                    'redirected_access', 'maintenance_mode',
+                    'size_bytes', 'used_bytes', 'free_bytes',
+                ],
+
+                // Free space moves whenever a machine writes a block. The
+                // owner node is deliberately not here: a volume changing
+                // owner is a real event and belongs in the journal.
+                volatile: ['used_bytes', 'free_bytes'],
+            ),
+
+            new self(
+                key: 'hv_node',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_node',
+                changeTable: 'hv_node_change',
+                changeKey: 'node_id',
+                columns: [
+                    'hostname', 'fqdn', 'domain', 'part_of_domain',
+                    'cluster_moref', 'cluster_node_id', 'node_state', 'drain_status',
+                    'smbios_uuid', 'vendor', 'model', 'serial_number',
+                    'bios_version', 'bios_release_date',
+                    'cpu_model', 'cpu_sockets', 'cpu_cores', 'cpu_logical',
+                    'cpu_max_clock_mhz', 'memory_bytes',
+                    'os_caption', 'os_version', 'os_build', 'os_architecture',
+                    'os_install_date', 'last_boot', 'uptime_seconds',
+                    'hyperv_module_version', 'powershell_version',
+                    'hyperv_logical_processors', 'hyperv_memory_capacity',
+                    'virtual_machine_path', 'virtual_hard_disk_path',
+                    'numa_spanning_enabled', 'enhanced_session_mode', 'iov_support',
+                    'mac_address_minimum', 'mac_address_maximum',
+                    'migration_enabled', 'migration_auth_type', 'migration_performance',
+                    'max_vm_migrations', 'max_storage_migrations',
+                    'replica_enabled', 'replica_auth_type', 'replica_storage_location',
+                    'vm_count', 'source_collected_at',
+                ],
+
+                // Uptime climbs by itself, and the collection time is
+                // different on every run by definition.
+                volatile: ['uptime_seconds', 'source_collected_at'],
+            ),
+
+            new self(
+                key: 'hv_host_device',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_host_device',
+                changeTable: 'hv_host_device_change',
+                changeKey: 'device_id',
+                columns: [
+                    'node_moref', 'kind', 'name', 'adapter_id',
+                    'interface_description', 'interface_index',
+                    'mac_address', 'device_status', 'link_speed', 'speed_bps',
+                    'media_type', 'full_duplex', 'is_virtual',
+                    'driver_name', 'driver_version',
+                    'switch_name', 'switch_moref',
+                    'vlan_mode', 'vlan_access_id', 'vlan_native_id', 'vlan_allowed_list',
+                    'ip_addresses',
+                    'teaming_mode', 'load_balancing', 'team_members',
+                ],
+
+                // Windows assigns the interface index and renumbers it on
+                // reboot or when a driver reloads, which is not a change to
+                // the adapter.
+                volatile: ['interface_index'],
+            ),
+
+            new self(
+                key: 'hv_vswitch',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_vswitch',
+                changeTable: 'hv_vswitch_change',
+                changeKey: 'vswitch_id',
+                columns: [
+                    'node_moref', 'name', 'switch_guid', 'switch_type',
+                    'allow_management_os', 'embedded_teaming',
+                    'iov_enabled', 'iov_support', 'packet_direct_enabled',
+                    'bandwidth_reservation_mode',
+                    'default_flow_min_absolute', 'default_flow_min_weight',
+                    'uplink_adapters', 'team_teaming_mode', 'team_load_balancing',
+                    'notes',
+                ],
+            ),
+
+            new self(
+                key: 'hv_vm',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_vm',
+                changeTable: 'hv_vm_change',
+                changeKey: 'vm_id',
+                columns: [
+                    'name', 'vm_state', 'vm_status', 'generation', 'config_version',
+                    'owner_node_moref', 'owner_node', 'is_clustered',
+                    'processor_count', 'cpu_usage_percent',
+                    'cpu_reserve_percent', 'cpu_limit_percent', 'cpu_relative_weight',
+                    'cpu_compat_for_migration', 'cpu_nested_virtualization',
+                    'cpu_threads_per_core',
+                    'memory_startup', 'memory_minimum', 'memory_maximum',
+                    'dynamic_memory_enabled', 'memory_buffer_percent', 'memory_priority',
+                    'memory_assigned', 'memory_demand', 'uptime_seconds',
+                    'integration_services_version', 'integration_services_enabled',
+                    'guest_os_name', 'guest_os_version', 'guest_hostname',
+                    'secure_boot', 'secure_boot_template', 'boot_order',
+                    'automatic_start_action', 'automatic_start_delay',
+                    'automatic_stop_action', 'automatic_critical_action',
+                    'automatic_checkpoints', 'checkpoint_type',
+                    'vm_path', 'configuration_location',
+                    'snapshot_file_location', 'smart_paging_file_path',
+                    'created_at_source', 'notes',
+                    'disk_count', 'disk_capacity_bytes', 'disk_file_bytes',
+                    'nic_count', 'checkpoint_count',
+                    'replication_state', 'replication_health', 'replication_mode',
+                    'replication_role',
+                    'replication_primary_server', 'replication_replica_server',
+                    'replication_frequency_sec', 'replication_recovery_history',
+                    'replicated_disk_count', 'replication_last_time',
+                ],
+
+                // Everything that moves while nothing is configured: the
+                // counters a running machine produces, and the replication
+                // timestamp, which advances every cycle.
+                volatile: [
+                    'cpu_usage_percent', 'memory_assigned', 'memory_demand',
+                    'uptime_seconds', 'disk_file_bytes', 'replication_last_time',
+                ],
+            ),
+
+            new self(
+                key: 'hv_vm_disk',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_vm_disk',
+                changeTable: 'hv_vm_disk_change',
+                changeKey: 'disk_id',
+                columns: [
+                    'vm_moref', 'controller_type', 'controller_number', 'controller_location',
+                    'disk_path', 'disk_number', 'is_pass_through', 'is_shared', 'supports_pr',
+                    'vhd_format', 'vhd_type', 'size_bytes', 'file_size_bytes', 'parent_path',
+                    'block_size', 'logical_sector_size', 'physical_sector_size',
+                    'fragmentation_pct', 'disk_identifier',
+                    'maximum_iops', 'minimum_iops', 'write_hardening', 'vhd_error',
+                ],
+
+                // A dynamic disk grows as the guest writes, and fragmentation
+                // moves with it. Neither is a configuration change.
+                volatile: ['file_size_bytes', 'fragmentation_pct'],
+            ),
+
+            new self(
+                key: 'hv_vm_nic',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_vm_nic',
+                changeTable: 'hv_vm_nic_change',
+                changeKey: 'nic_id',
+                columns: [
+                    'vm_moref', 'name', 'mac_address', 'dynamic_mac',
+                    'switch_name', 'switch_moref', 'is_connected', 'nic_status',
+                    'is_legacy', 'device_naming',
+                    'mac_spoofing', 'dhcp_guard', 'router_guard', 'port_mirroring',
+                    'vlan_mode', 'vlan_access_id', 'vlan_native_id', 'vlan_primary_id',
+                    'vlan_allowed_list', 'isolation_mode', 'isolation_vlan_id',
+                    'allow_untagged',
+                    'vmq_weight', 'iov_weight',
+                    'min_bandwidth_absolute', 'min_bandwidth_weight', 'max_bandwidth',
+                    'ip_addresses',
+                ],
+            ),
+
+            new self(
+                key: 'hv_vm_checkpoint',
+                source: Integration::TYPE_HYPERV,
+                table: 'hv_vm_checkpoint',
+                changeTable: 'hv_vm_checkpoint_change',
+                changeKey: 'checkpoint_id',
+                columns: [
+                    'vm_moref', 'name', 'checkpoint_type', 'created_at_source',
+                    'parent_checkpoint_moref', 'parent_checkpoint_name',
+                    'checkpoint_path', 'config_location',
+                ],
+            ),
         ];
 
         $byKey = [];
